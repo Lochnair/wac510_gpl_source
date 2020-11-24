@@ -1,0 +1,143 @@
+diff --git a/net/bridge/br.c b/net/bridge/br.c
+index 2ae2323..b37f7dc 100755
+--- a/net/bridge/br.c
++++ b/net/bridge/br.c
+@@ -19,10 +19,13 @@
+ #include <linux/llc.h>
+ #include <net/llc.h>
+ #include <net/stp.h>
+-
++#include <linux/kobject.h> 
++#include <linux/sysfs.h>
++#include <linux/fs.h>
+ #include "br_private.h"
+ 
+ 
++static struct kobject *url_kobject = NULL;
+ #ifdef CONFIG_BRISO_ENABLED
+ int briso_unicast_enabled = 0;
+ int briso_multicast_enabled = 0;
+@@ -42,6 +45,7 @@ unsigned char brhttp_redirect_cpauth_status[18];
+ unsigned int brhttp_redirect_reset_entry = 0;
+ #endif
+ unsigned char br_tuntap_ifname[IFNAMSIZ];
++unsigned char url_tuntap_ifname[IFNAMSIZ];
+ 
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+ extern int br_hrdb_init(void);
+@@ -361,7 +365,72 @@ int br_sysctl_call_brhttp_redirect_reset_mac_entry(ctl_table * ctl, int write,
+ #endif
+ 
+ extern struct net_device *br_tuntap_dev;
++extern struct net_device *url_tuntap_dev;
++int url_flag = 0;
++static ssize_t url_show(struct kobject *kobj, struct kobj_attribute *attr, 
++                      char *buf) 
++{
++    printk(KERN_NOTICE "URL-TRACK: the url flag is : %s\n", buf);
++    return sprintf(buf, "%d\n", url_flag); 
++} 
++ 
++static ssize_t url_store(struct kobject *kobj, struct kobj_attribute *attr, 
++                      char *buf, size_t count) 
++{
++    sscanf(buf, "%d", &url_flag);
++    printk(KERN_NOTICE "URL-TRACK: url_flag sysfs enabled %d\n",url_flag);
++    return count; 
++} 
++ 
++ 
++static struct kobj_attribute url_attribute =__ATTR(url, 0660, url_show, 
++                                                   url_store);
++
++int create_url_sysfs(void) {
++    int error = 0;
++
++    url_kobject = kobject_create_and_add("url_kobject", kernel_kobj);
++    if(!url_kobject) {
++        return ENOMEM;
++    }
++    error = sysfs_create_file(url_kobject, &url_attribute.attr);
++    if(error) {
++        printk(KERN_NOTICE, "failed to create sysfs\n");
++    }
++    return 1;
++}
+ 
++static int url_sysctl_call_tuntap_if(ctl_table * ctl , int write,
++                                void __user * buffer, size_t * lenp, loff_t *ppos)
++{
++    int ret = 0;
++    ret = proc_dostring(ctl, write, buffer, lenp, ppos);
++
++    if(write) {
++        if(*url_tuntap_ifname == '0') {
++            printk(KERN_NOTICE "%s(): Releasing tuntap interface \"%s\"\n", __func__, url_tuntap_ifname);
++            url_tuntap_dev = NULL;
++        } else {
++            struct net_device *dev = dev_get_by_name(&init_net, url_tuntap_ifname);
++            if (dev) {
++                url_tuntap_dev = dev;
++                printk(KERN_NOTICE "%s(): Found tuntap interface \"%s\"\n", __func__, url_tuntap_ifname);
++            } else {
++                printk(KERN_NOTICE "%s(): Unable to lookup tuntap interface \"%s\"\n", __func__, url_tuntap_ifname);
++            }
++        }
++    } else {
++        if(url_tuntap_dev) {
++            printk(KERN_NOTICE "%s(): tuntap interface is registered\n", __func__);
++        } else {
++            printk(KERN_NOTICE "%s(): tuntap interface is not registered\n", __func__);
++        }
++    }
++    if(create_url_sysfs() != 1) {
++        printk(KERN_NOTICE "%s(): unable to create sysfs\n", __func__);
++    }
++    return ret;
++}
+ static
+ int br_sysctl_call_tuntap_if(ctl_table * ctl, int write,
+                             void __user * buffer, size_t * lenp, loff_t * ppos)
+@@ -515,6 +584,14 @@ static ctl_table br_table[] = {
+ 	    .proc_handler   = &br_sysctl_call_tuntap_if,
+     },
+ 
++    {
++        .procname       = "url-tuntap-if",
++        .data           = &url_tuntap_ifname,
++        .maxlen         = sizeof(url_tuntap_ifname),
++        .mode           = 0644,
++        .proc_handler   = &url_sysctl_call_tuntap_if,
++    },
++
+    { }
+ };
+ 
+diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
+index 3603b86..9aef0d2 100644
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -56,6 +56,8 @@ extern void br_hrdb_update(const unsigned char *mac, unsigned char event_sent);
+ #define INVALID_PKT 0xFFFF
+ 
+ struct net_device *br_tuntap_dev;
++struct net_device *url_tuntap_dev;
++extern int url_flag;
+ 
+ struct parse_pkt {
+ 	u16 type;
+@@ -326,6 +328,14 @@ int br_handle_frame_finish(struct sk_buff *skb)
+ 			switch (pkt.dport) {
+             case URL_DNS_PKT:
+ 			case DNS_PKT:
++                if (url_flag && url_tuntap_dev &&
++                    (skb2 = skb_copy(skb, GFP_ATOMIC))) {
++                    skb_push(skb2, ETH_HLEN + 4);
++                    *(u32*)(skb2->data) = skb->dev->ifindex;
++                    skb2->dev = url_tuntap_dev;
++                    dev_queue_xmit(skb2);
++                    skb2 = NULL;
++                }
+             if (!SHOULD_PARSE_DNS(skb->dev, skb)) {
+                 break;
+             }

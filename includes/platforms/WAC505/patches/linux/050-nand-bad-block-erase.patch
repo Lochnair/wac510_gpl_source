@@ -1,0 +1,88 @@
+diff --git a/drivers/mtd/mtdchar.c b/drivers/mtd/mtdchar.c
+index 2147e733..92c5b5bb 100644
+--- a/drivers/mtd/mtdchar.c
++++ b/drivers/mtd/mtdchar.c
+@@ -668,6 +668,7 @@ static int mtdchar_ioctl(struct file *file, u_int cmd, u_long arg)
+ 
+ 	case MEMERASE:
+ 	case MEMERASE64:
++	case MEMFORCEERASE:
+ 	{
+ 		struct erase_info *erase;
+ 
+@@ -693,6 +694,17 @@ static int mtdchar_ioctl(struct file *file, u_int cmd, u_long arg)
+ 				}
+ 				erase->addr = einfo64.start;
+ 				erase->len = einfo64.length;
++			} else if (cmd == MEMFORCEERASE){
++				struct force_erase_info_user force_erase;
++
++				if (copy_from_user(&force_erase, argp,
++					    sizeof(struct force_erase_info_user))) {
++					kfree(erase);
++					return -EFAULT;
++				}
++				erase->addr = force_erase.start;
++				erase->len = force_erase.length;
++				erase->skipbad = (force_erase.clrbb) ? true : false;
+ 			} else {
+ 				struct erase_info_user einfo32;
+ 
+diff --git a/drivers/mtd/nand/nand_base.c b/drivers/mtd/nand/nand_base.c
+index 541ab636..e76987bc 100644
+--- a/drivers/mtd/nand/nand_base.c
++++ b/drivers/mtd/nand/nand_base.c
+@@ -2710,7 +2710,7 @@ int nand_erase_nand(struct mtd_info *mtd, struct erase_info *instr,
+ 
+ 	while (len) {
+ 		/* Check if we have a bad block, we do not erase bad blocks! */
+-		if (nand_block_checkbad(mtd, ((loff_t) page) <<
++		if (!instr->skipbad && nand_block_checkbad(mtd, ((loff_t) page) <<
+ 					chip->page_shift, 0, allowbbt)) {
+ 			pr_warn("%s: attempt to erase a bad block at page 0x%08x\n",
+ 				    __func__, page);
+diff --git a/include/linux/mtd/mtd.h b/include/linux/mtd/mtd.h
+index 6a11fe5f..72f2c916 100644
+--- a/include/linux/mtd/mtd.h
++++ b/include/linux/mtd/mtd.h
+@@ -59,6 +59,7 @@ struct erase_info {
+ 	u8 *erase_buf;
+ 	u32 erase_buf_ofs;
+ 	bool partial_start;
++	bool skipbad;
+ };
+ 
+ struct mtd_erase_region_info {
+diff --git a/include/uapi/mtd/mtd-abi.h b/include/uapi/mtd/mtd-abi.h
+index e272ea06..1a3e3611 100644
+--- a/include/uapi/mtd/mtd-abi.h
++++ b/include/uapi/mtd/mtd-abi.h
+@@ -22,6 +22,19 @@
+ 
+ #include <linux/types.h>
+ 
++/**
++ * force_erase_info_user - Structure to get force erase info from user.
++ *
++ * @start : Start addr of the block.
++ * @length : Length of the block.
++ * @clrbb : Clear Badblock (Force Erase).
++ */
++struct force_erase_info_user {
++	__u32 start;
++	__u32 length;
++	__u8 clrbb;
++};
++
+ struct erase_info_user {
+ 	__u32 start;
+ 	__u32 length;
+@@ -202,6 +215,8 @@ struct otp_info {
+  * without OOB, e.g., NOR flash.
+  */
+ #define MEMWRITE		_IOWR('M', 24, struct mtd_write_req)
++/* Erase segment of MTD */
++#define MEMFORCEERASE		_IOW('M', 25, struct force_erase_info_user)
+ 
+ /*
+  * Obsolete legacy interface. Keep it in order not to break userspace

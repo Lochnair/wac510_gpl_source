@@ -1,0 +1,73 @@
+diff --git a/common/cmd_dni.c b/common/cmd_dni.c
+index e46c808..75ee9b5 100644
+--- a/common/cmd_dni.c
++++ b/common/cmd_dni.c
+@@ -297,9 +297,9 @@ int do_board_mini_parameters_set(cmd_tbl_t *cmdtp, int flag, int argc,
+     char runcmd[256];
+     char src[50] ;
+     int offset=0, i=0, j=0, k=0, val=0, sum=0, length, m=0;
+-    int parameters_len[1] ={SERIAL_NUMBER_LENGTH};
++       int parameters_len[2] ={SERIAL_NUMBER_LENGTH, DEF_SSID_LENGTH};
+ 
+-    if (argc != 4 ) {
++       if (argc != 5 ) {
+         printf("%s\n",cmdtp->usage);
+         return 1;
+     }
+@@ -308,12 +308,21 @@ int do_board_mini_parameters_set(cmd_tbl_t *cmdtp, int flag, int argc,
+     };
+ 
+     char sectorBuff[6 * 2 +
+-        SERIAL_NUMBER_LENGTH];
++               SERIAL_NUMBER_LENGTH + BOARD_PRODUCT_ID_LENGTH
++               + HW_VER_LENGTH + SUB_HW_VER_LENGTH + REGION_INFO_LENGTH
++               + BOARD_TYPE_LENGTH
++               + DEV_TYPE_LENGTH
++               + DEF_SSID_LENGTH];
++
++    length = 6 * 2 + SERIAL_NUMBER_LENGTH + BOARD_PRODUCT_ID_LENGTH
++                       + HW_VER_LENGTH + SUB_HW_VER_LENGTH + REGION_INFO_LENGTH
++                       + BOARD_TYPE_LENGTH
++                       + DEV_TYPE_LENGTH
++                       + DEF_SSID_LENGTH;
+ 
+-    length = 6 * 2 + SERIAL_NUMBER_LENGTH;
+ 
+     /* check MAC address */
+-    for (k = 2; k < 4; ++k)
++    for (k = 3; k < 5; ++k)
+     {
+         sum = 0 , val = 0;
+         i = 0; j = 0;
+@@ -352,7 +361,7 @@ int do_board_mini_parameters_set(cmd_tbl_t *cmdtp, int flag, int argc,
+         }
+     }
+ 
+-    for (i=1 ;i<=1 ;i++){
++    for (i=1 ;i<=2 ;i++){
+         int len;
+         len = strlen(argv[i]);   /*check the SN's length*/
+         if (len > parameters_len[i-1]){
+@@ -373,13 +382,17 @@ int do_board_mini_parameters_set(cmd_tbl_t *cmdtp, int flag, int argc,
+         memcpy(sectorBuff + 12 + offset, argv[i], len);
+         offset += len;
+     }
++   memcpy(sectorBuff + 12 + SERIAL_NUMBER_LENGTH + BOARD_PRODUCT_ID_LENGTH
++         + HW_VER_LENGTH + SUB_HW_VER_LENGTH + REGION_INFO_LENGTH
++         + BOARD_TYPE_LENGTH
++         + DEV_TYPE_LENGTH, argv[2], DEF_SSID_LENGTH);
+ 
+     set_board_data(0, length, sectorBuff);
+     return 0;
+ }
+ 
+ U_BOOT_CMD(
+-        board_mini_parameters_set, 4, 0, do_board_mini_parameters_set,
+-        "set <SN> <lan address> <wlan address>",
+-        "example: board_mini_parameters_set 4DA159E30007E 6a:03:7F:EF:77:87 5b:03:33:44:66:FE"
+-        );
++          board_mini_parameters_set, 5, 0, do_board_mini_parameters_set,
++   "set <SN> <DEFAULT_SSID> <lan address> <wlan address>",
++   "example: board_mini_parameters_set 4DA159E30007E Netgear087b2f-setup 6a:03:7F:EF:77:86 5b:03:33:44:66:FE"
++);
+

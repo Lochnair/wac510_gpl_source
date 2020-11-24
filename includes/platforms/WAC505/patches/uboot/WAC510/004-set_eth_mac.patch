@@ -1,0 +1,171 @@
+diff --git a/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c b/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
+index 7dadfb2..2119ddb 100644
+--- a/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
++++ b/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
+@@ -488,6 +488,114 @@ int get_eth_mac_address(uchar *enetaddr, uint no_of_macs)
+ 	return ret;
+ }
+ 
++/* Getting the default MAC address from MANUFACTURING DATA partition */
++int get_def_eth_mac_address(uchar *enetaddr)
++{
++	s32 ret = -1;
++	u32 start_blocks;
++	u32 size_blocks;
++	u32 length = 6;
++	u32 flash_type;
++	loff_t md_offset;
++	qca_smem_flash_info_t *sfi = &qca_smem_flash_info;
++
++	if (sfi->flash_type != SMEM_BOOT_MMC_FLASH) {
++		if (qca_smem_flash_info.flash_type == SMEM_BOOT_SPI_FLASH)
++			flash_type = CONFIG_IPQ_SPI_NOR_INFO_IDX;
++		else if (qca_smem_flash_info.flash_type == SMEM_BOOT_NAND_FLASH)
++			flash_type = CONFIG_IPQ_NAND_NAND_INFO_IDX;
++		else {
++			printf("Unknown flash type\n");
++			return -EINVAL;
++		}
++
++		ret = smem_getpart("0:MANUDATA", &start_blocks, &size_blocks);
++		if (ret < 0) {
++			printf("No MANUFACTURING DATA partition found\n");
++			return ret;
++		}
++
++		/*
++		 * MD partition 0th position will contain Mac address.
++		 */
++		md_offset =
++		((loff_t) qca_smem_flash_info.flash_block_size * start_blocks);
++
++		ret = nand_read(&nand_info[flash_type],
++				md_offset, &length, enetaddr);
++		if (ret < 0) {
++			printf("MANUFACTURING DATA partition read failed..\n");
++		}
++	}
++
++	return ret;
++}
++
++#define ART_PART_SIZE 0x10000
++/* Setting the default MAC address in ART partition */
++int set_def_eth_mac_address(uchar *enetaddr)
++{
++	s32 ret = -1;
++	u32 start_blocks;
++	u32 size_blocks;
++	u32 length;
++	u32 flash_type;
++	loff_t art_offset;
++	qca_smem_flash_info_t *sfi = &qca_smem_flash_info;
++	uchar art_buf[ART_PART_SIZE];
++
++	if (sfi->flash_type != SMEM_BOOT_MMC_FLASH) {
++		if (qca_smem_flash_info.flash_type == SMEM_BOOT_SPI_FLASH)
++			flash_type = CONFIG_IPQ_SPI_NOR_INFO_IDX;
++		else if (qca_smem_flash_info.flash_type == SMEM_BOOT_NAND_FLASH)
++			flash_type = CONFIG_IPQ_NAND_NAND_INFO_IDX;
++		else {
++			printf("Unknown flash type\n");
++			return -EINVAL;
++		}
++
++
++		ret = smem_getpart("0:ART", &start_blocks, &size_blocks);
++		if (ret < 0) {
++			printf("No ART partition found\n");
++			return ret;
++		}
++
++		/*
++		 * Store default Mac address in 0th position of ART partition
++		 */
++		art_offset =
++			((loff_t) qca_smem_flash_info.flash_block_size * start_blocks);
++
++		memset(art_buf, 0, ART_PART_SIZE);
++		length = ART_PART_SIZE;
++		ret = nand_read(&nand_info[flash_type],
++				art_offset, &length, art_buf);
++		if (ret < 0) {
++			printf("ART partition read failed..\n");
++		}
++
++		memcpy(art_buf, enetaddr, 6);
++		/* Store default Eth1 Mac address */
++		enetaddr[5] += 0x10;
++		memcpy(art_buf + 6, enetaddr, 6);
++	
++		length = ART_PART_SIZE;
++		ret = nand_erase(&nand_info[flash_type], art_offset, length);
++		if (ret < 0) {
++			printf("ART partition erase failed..\n");
++		}
++
++		ret = nand_write(&nand_info[flash_type],
++				art_offset, &length, art_buf);
++		if (ret < 0) {
++			printf("ART partition write failed..\n");
++		}
++	}
++
++	return ret;
++}
++
+ static void ipq40xx_set_ethmac_addr(void)
+ {
+ 	int i, ret;
+diff --git a/drivers/net/ipq40xx/ipq40xx_edma_eth.c b/drivers/net/ipq40xx/ipq40xx_edma_eth.c
+index c94c003..4611448 100755
+--- a/drivers/net/ipq40xx/ipq40xx_edma_eth.c
++++ b/drivers/net/ipq40xx/ipq40xx_edma_eth.c
+@@ -28,12 +28,14 @@
+ #define debugf(fmt, args...)
+ #endif
+ 
++extern int get_def_eth_mac_address(uchar *);
++extern int set_def_eth_mac_address(uchar *);
+ extern int ipq40xx_ess_sw_init(ipq40xx_edma_board_cfg_t *cfg);
+ extern void ipq40xx_ess_enable_lookup(void);
+ extern void ipq40xx_ess_disable_lookup(void);
+ extern void psgmii_self_test(void);
+ extern void clear_self_test_config(void);
+-uchar ipq40xx_def_enetaddr[6] = {0x00, 0x03, 0x7F, 0xBA, 0xDB, 0xAD};
++static uchar ipq40xx_def_enetaddr[6] = {'\0'};
+ static struct ipq40xx_eth_dev *ipq40xx_edma_dev[IPQ40XX_EDMA_DEV];
+ static int (*ipq40xx_switch_init)(struct ipq40xx_eth_dev *cfg);
+ extern void qca8075_ess_reset(void);
+@@ -831,6 +833,14 @@ int ipq40xx_edma_init(ipq40xx_edma_board_cfg_t *edma_cfg)
+ 
+ 	memset(c_info, 0, (sizeof(c_info) * IPQ40XX_EDMA_DEV));
+ 	memset(enet_addr, 0, sizeof(enet_addr));
++
++	/* Getting the default MAC address from MANUFACTURING DATA partition */
++	ret = get_def_eth_mac_address(ipq40xx_def_enetaddr);
++	if (ret < 0) {
++		printf("get_def_eth_mac_address failed\n");
++		goto failed;
++	}
++
+ 	/* Getting the MAC address from ART partition */
+ 	ret = get_eth_mac_address(enet_addr, IPQ40XX_EDMA_DEV);
+ 	/*
+@@ -886,8 +896,14 @@ int ipq40xx_edma_init(ipq40xx_edma_board_cfg_t *edma_cfg)
+ 		dev[i]->priv = (void *)ipq40xx_edma_dev[i];
+ 
+ 		if ((ret < 0) ||
+-			(!is_valid_ether_addr(&enet_addr[edma_cfg->unit * 6]))) {
+-			memcpy(&dev[i]->enetaddr[0], ipq40xx_def_enetaddr, 6);
++				(memcmp(ipq40xx_def_enetaddr, enet_addr, 6) != 0)) {
++			ret = set_def_eth_mac_address(ipq40xx_def_enetaddr);
++			if (ret < 0) {
++				printf("set_def_eth_mac_address failed\n");
++				goto failed;
++			} else {
++				memcpy(&dev[i]->enetaddr[0], ipq40xx_def_enetaddr, 6);
++			}
+ 		} else {
+ 			memcpy(&dev[i]->enetaddr[0],
+ 				&enet_addr[edma_cfg->unit * 6], 6);

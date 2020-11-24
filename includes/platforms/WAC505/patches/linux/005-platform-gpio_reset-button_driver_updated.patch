@@ -1,0 +1,466 @@
+diff --git a/arch/arm/mach-qcom/Kconfig b/arch/arm/mach-qcom/Kconfig
+index 8521a516..c056496b 100644
+--- a/arch/arm/mach-qcom/Kconfig
++++ b/arch/arm/mach-qcom/Kconfig
+@@ -16,6 +16,14 @@ config ARCH_QCOM
+ 	help
+ 	  Support for Qualcomm's devicetree based systems.
+ 
++config WAC5XX_GPIO
++      bool "WAC5XX Platform GPIO support"
++      ---help---
++      Say Y here to include support for LED GPIOs and S/W reset button in WAC510 AP.
++      This driver does GPIO init based on the respective WAC5XX products and also
++      allows the user to reboot AP on short press and restore AP to factory default 
++      settings if the button is pressed and held for 5 seconds.
++
+ config MSM_PCIE
+ 	bool "MSM PCIe Controller driver"
+ 	depends on PCI && PCI_MSI
+diff --git a/arch/arm/mach-qcom/Makefile b/arch/arm/mach-qcom/Makefile
+index 6ab34b90..a2b5dfea 100644
+--- a/arch/arm/mach-qcom/Makefile
++++ b/arch/arm/mach-qcom/Makefile
+@@ -6,3 +6,4 @@ obj-y			+= headsmp.o
+ obj-$(CONFIG_MSM_PCIE)	+= pcie.o pcie_irq.o pcie_phy.o
+ obj-$(CONFIG_QFPROM)	+= qfprom.o
+ obj-$(CONFIG_MSM_RPM_LOG) += rpm_log.o
++obj-$(CONFIG_WAC5XX_GPIO) += wac5xx_gpio_init.o
+diff --git a/arch/arm/mach-qcom/wac5xx_gpio_init.c b/arch/arm/mach-qcom/wac5xx_gpio_init.c
+new file mode 100644
+index 00000000..4d56de5f
+--- /dev/null
++++ b/arch/arm/mach-qcom/wac5xx_gpio_init.c
+@@ -0,0 +1,359 @@
++/*
++* wac5xx_gpio_init.c
++* Created on Jan 31, 2017
++*
++* Copyright (c) 2017, NETGEAR, Inc.
++* 350 East Plumeria, San Jose California, 95134, U.S.A.
++* All rights reserved.
++*
++*
++* This software is the confidential and proprietary information of
++* NETGEAR, Inc. ("Confidential Information"). You shall not
++* disclose such Confidential Information and shall use it only in
++* accordance with the terms of the license agreement you entered into
++* with NETGEAR.
++*
++* @Author : Venkatesh Perumal <venkatesh.perumal@netgear.com>
++* 
++*/
++
++#include <linux/wac5xx_gpio.h>
++
++char g_product_id[7] = {0};
++static char *g_mfg_mode = NULL;
++static unsigned long g_mfg_data = -1;
++static char *ptr = NULL;
++static int g_reset_gpio = 0;
++static DECLARE_WAIT_QUEUE_HEAD(button_wait_queue);
++static char button_output_buffer[16];	/* Stores data to write out of device */
++static int bcount;			/* The number of bytes in the buffer */
++static int irq_rst_button;
++static struct work_struct reset_button_work;
++static int led_gpio_num = 0;
++struct gpio *current_p_gpio = NULL;
++static int current_p_gpio_num = 0;
++
++EXPORT_SYMBOL(g_product_id);
++static void button_press_handler(struct work_struct *work_q)
++{
++    unsigned long stop;
++    stop = jiffies + 5 * HZ;
++    do {
++        msleep(1000);
++        if (gpio_get_value(g_reset_gpio) == 1) {
++            strcpy (button_output_buffer, "REBOOT");
++            goto _ret;
++        }
++    } while (time_before(jiffies, stop));
++    strcpy (button_output_buffer, "FACTORY_RESET");
++
++_ret:
++    bcount = sizeof (button_output_buffer);
++    wake_up_interruptible (&button_wait_queue);
++    enable_irq(irq_rst_button);
++    return ;
++}
++
++static irqreturn_t button_isr (int irq, void *dev_id)
++{
++    disable_irq_nosync(irq);
++
++    if (!schedule_work(&reset_button_work)) {
++        printk(KERN_ERR "WAC5xx: Err, sw reset work queue is not scheduled\n");
++        return -1;
++    }
++
++    return IRQ_HANDLED;
++}
++
++static int button_read (struct file *filp, char __user *buffer,
++        size_t count, loff_t *ppos)
++{
++    DEFINE_WAIT(wait);
++    prepare_to_wait(&button_wait_queue, &wait, TASK_INTERRUPTIBLE);
++    schedule();
++    finish_wait(&button_wait_queue, &wait);
++    return (copy_to_user (buffer, &button_output_buffer, bcount))
++        ? -EFAULT : bcount;
++}
++
++static const struct file_operations button_fops = {
++    .owner		= THIS_MODULE,
++    .read		= button_read,
++	.llseek		= noop_llseek,
++};
++
++static struct miscdevice button_misc_device = {
++    BUTTON_MINOR,
++    "rst_button",
++    &button_fops,
++};
++
++static int rst_button_init(struct gpio *reset_gpio)
++{
++    if (misc_register (&button_misc_device)) {
++        printk (KERN_WARNING "WAC5xx: rst_button: Couldn't register device 10, "
++                "%d.\n", BUTTON_MINOR);
++        return -EBUSY;
++    }
++
++	g_reset_gpio = reset_gpio->gpio;
++	printk(KERN_INFO "WAC5xx: %s: SW reset GPIO->%d\n", __func__, reset_gpio->gpio);
++    irq_rst_button = gpio_to_irq(g_reset_gpio);
++    if (request_irq (irq_rst_button, button_isr, IRQF_TRIGGER_FALLING,
++                "rst_button", NULL)) {
++        printk (KERN_WARNING "WAC5xx: rst_button: IRQ %d is not free.\n", reset_gpio->gpio);
++        misc_deregister (&button_misc_device);
++        return -EIO;
++    }
++    INIT_WORK(&reset_button_work, button_press_handler);
++    printk (KERN_INFO "WAC5xx: %s success\n", __func__);
++
++    return 0;
++}
++
++/* WAC505 Platform level initialization */
++
++/* WAC505 Manufacturing GPIO Initializations */
++static struct gpio w505_mfg_mode_gpios[]  = {
++    { 24, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "ACT_LED_BLUE" }, /* default to OFF */
++	 { 29, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "ACT_LED_GREEN" },
++    { 31, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_5G_GREEN" }, /* default to OFF */
++    { 28, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_5G_BLUE" }, /* default to OFF */
++    { 30, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_2_4G_GREEN" }, /* default to OFF */
++    { 27, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_2_4G_BLUE" }, /* default to OFF */
++    { 23, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "PWR_LED_GREEN" }, /* default to OFF */
++    { 22, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "PWR_LED_AMBER" }, /* default to OFF */
++    { 25, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "NW_LED_WAN_100" }, /* default to OFF */
++    { 26, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "NW_LED_WAN_1000" }, /* default to OFF */
++};
++
++/* WAC505 Shipping mode GPIO Initializations */
++static struct gpio w505_shipping_mode_gpios[]  = {
++	{ 24, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "ACT_LED_BLUE"}, /* default to OFF */
++	{ 29, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "ACT_LED_GREEN"}, /* default to OFF */
++	{ 31, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_5G_GREEN" }, /* default to OFF */
++	{ 28, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_5G_BLUE" }, /* default to OFF */
++	{ 30, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_2_4G_GREEN" }, /* default to OFF */
++	{ 27, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_2_4G_BLUE" }, /* default to OFF */
++	{ 23, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "PWR_LED_GREEN" }, /* default to OFF */
++	{ 22, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "PWR_LED_AMBER" }, /* default to ON */
++   { 25, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "NW_LED_WAN_100" }, /* default to OFF */
++   { 26, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "NW_LED_WAN_1000" }, /* default to OFF */
++};
++
++static struct gpio w505_sw_reset_gpios[]  = {
++    { 32, GPIOF_IN | GPIOF_INIT_HIGH | GPIOF_EXPORT, "SW_RESET_BUTTON" }, /* default to OFF */
++};
++
++/* WAC510 Platform level initialization */
++
++/* WAC510 Manufacturing GPIO Initializations */
++static struct gpio w510_mfg_mode_leds_gpios[]  = {
++	{ 248, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "ACT_LED_GREEN" }, /* default to OFF */
++	{ 249, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_5G_GREEN" }, /* default to OFF */
++	{ 250, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_5G_BLUE" }, /* default to OFF */
++	{ 251, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_2_4G_GREEN" }, /* default to OFF */
++	{ 252, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_2_4G_BLUE" }, /* default to OFF */
++	{ 253, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "PWR_LED_GREEN" }, /* default to OFF */
++	{ 254, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "PWR_LED_AMBER" }, /* default to OFF */
++};
++
++/* GPIO for WAC510 Shipping mode */
++static struct gpio w510_shipping_mode_leds_gpios[]  = {
++    { 248, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "ACT_LED_GREEN"  }, /* default to OFF */
++    { 249, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_5G_GREEN" }, /* default to OFF */
++    { 250, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_5G_BLUE" }, /* default to OFF */
++    { 251, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_2_4G_GREEN" }, /* default to OFF */
++    { 252, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "WIFI_LED_2_4G_BLUE" }, /* default to OFF */
++    { 253, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "PWR_LED_GREEN" }, /* default to OFF */
++    { 254, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "PWR_LED_AMBER" }, /* default to ON */
++};
++
++static struct gpio w510_sw_reset_gpios[] = {
++    { 63, GPIOF_IN | GPIOF_INIT_HIGH | GPIOF_EXPORT, "SW_RESET_BUTTON" }, /* default to OFF */
++};
++
++static int get_led_gpio_num(const struct gpio *array, int num, char *label)
++{
++    int i = 0;
++    
++    for (i = 0; i < num; i++, array++) {
++        if (!strcmp(array->label, label)) {
++			return (array->gpio);
++		}
++    }
++}
++
++int get_w5xx_platform_led_gpio_num(char *gpio_label) 
++{
++	return get_led_gpio_num(current_p_gpio, current_p_gpio_num, gpio_label);
++}
++EXPORT_SYMBOL(get_w5xx_platform_led_gpio_num);
++
++/* Platform Initialization */
++struct w5xx_platform_gpio wac5xx_pdata[] = {
++	{
++		.platform_name = "WAC505",
++		.mfg_led_gpios = w505_mfg_mode_gpios,
++		.shipping_led_gpios = w505_shipping_mode_gpios,
++		.sw_reset_gpios = w505_sw_reset_gpios,
++		.nr_mfg_led_gpios = ARRAY_SIZE(w505_mfg_mode_gpios),
++		.nr_shipping_led_gpios = ARRAY_SIZE(w505_shipping_mode_gpios),
++		.nr_sw_reset_gpios = ARRAY_SIZE(w505_sw_reset_gpios),
++	},
++	{
++		.platform_name = "WAC510",
++		.mfg_led_gpios = w510_mfg_mode_leds_gpios,
++		.shipping_led_gpios = w510_shipping_mode_leds_gpios,
++		.sw_reset_gpios = w510_sw_reset_gpios,
++		.nr_mfg_led_gpios = ARRAY_SIZE(w510_mfg_mode_leds_gpios),
++		.nr_shipping_led_gpios = ARRAY_SIZE(w510_shipping_mode_leds_gpios),
++		.nr_sw_reset_gpios = ARRAY_SIZE(w510_sw_reset_gpios),
++	},
++};
++
++static int machine_is_wac5xx()
++{
++	char *pid;
++	printk(KERN_INFO "WAC5xx: saved_command_line : %s\n", saved_command_line);
++
++	if ((pid = strstr(saved_command_line, "product_id")) && strchr(pid, '=')) {
++		strncpy(g_product_id, strchr(pid, '=') + 1, 6);
++	} else
++		strncpy(g_product_id, saved_command_line, 6);
++	printk(KERN_INFO "WAC5xx: Product is %s\n", g_product_id);
++	if (!strlen(g_product_id)) {
++		printk(KERN_ERR "WAC5xx: Err, no Macine-Id found!!!\n");
++		return -1;
++	}
++	/* Check if Product is in Manufacturing Mode */
++	g_mfg_mode = strstr(saved_command_line, "mfg_mode=");
++	if (g_mfg_mode) {
++		g_mfg_data = simple_strtoul(&g_mfg_mode[9], &ptr, 10);
++		if (g_mfg_data == 0) {
++			printk(KERN_INFO "WAC5xx: Product is in Shipping mode (mfg_mode = %lu)\n", g_mfg_data);
++		} else {
++			printk(KERN_INFO "WAC5xx: Product is in MFG mode (mfg_mode = %lu)\n", g_mfg_data);
++		}
++	} else {
++		printk(KERN_INFO "WAC5xx: shipping mode\n");
++	}
++
++	return 0;
++}
++
++static int platform_gpio_init()
++{
++	int i = 0, ret = 0;
++
++	for (i = 0; i < ARRAY_SIZE(wac5xx_pdata); i++) {
++		if (!strcmp(g_product_id, wac5xx_pdata[i].platform_name)) {	/* Match the product-id */
++			if (g_mfg_mode) {
++				if (g_mfg_data == 0) {	/* shipping mode */
++					ret = gpio_request_array(wac5xx_pdata[i].shipping_led_gpios, wac5xx_pdata[i].nr_shipping_led_gpios);
++					printk(KERN_INFO "WAC5xx: %s: shipping mode GPIO request for %s\n", __func__, wac5xx_pdata[i].platform_name);
++					current_p_gpio = wac5xx_pdata[i].shipping_led_gpios;
++					current_p_gpio_num = wac5xx_pdata[i].nr_shipping_led_gpios;
++				}
++				else {	/* Manufacturing mode */
++					ret = gpio_request_array(wac5xx_pdata[i].mfg_led_gpios, wac5xx_pdata[i].nr_mfg_led_gpios);
++					printk(KERN_INFO "WAC5xx: %s: MFG mode GPIO request for product %s\n", __func__, wac5xx_pdata[i].platform_name);
++					current_p_gpio = wac5xx_pdata[i].mfg_led_gpios;
++					current_p_gpio_num = wac5xx_pdata[i].nr_mfg_led_gpios;
++				}
++			} else {	/* shipping mode */
++				ret = gpio_request_array(wac5xx_pdata[i].shipping_led_gpios, wac5xx_pdata[i].nr_shipping_led_gpios);
++				printk(KERN_INFO "WAC5xx: %s: shipping mode GPIO request for %s\n", __func__, wac5xx_pdata[i].platform_name);
++				current_p_gpio = wac5xx_pdata[i].shipping_led_gpios;
++				current_p_gpio_num = wac5xx_pdata[i].nr_shipping_led_gpios;
++			}
++			if (ret != 0) {
++				printk(KERN_ERR "WAC5xx: %s: %d: failed with err %d\n", __func__, __LINE__, ret);
++			}
++			printk(KERN_INFO "WAC5xx: %s: sw reset mode GPIO request %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++			ret = gpio_request_array(wac5xx_pdata[i].sw_reset_gpios, wac5xx_pdata[i].nr_sw_reset_gpios);
++			if (ret != 0) {
++				printk(KERN_ERR "WAC5xx: %s: %d: failed with err %d\n", __func__, __LINE__, ret);
++				goto err_platform_gpio_request;
++			}
++			ret = rst_button_init(wac5xx_pdata[i].sw_reset_gpios);
++			if (ret != 0) {
++				printk(KERN_ERR "WAC5xx: %s: %d: failed with err %d\n", __func__, __LINE__, ret);
++				goto err_sw_reset_gpio_request;
++			}
++			break;
++		} else {	/* If product-Id is not WAC5xx */
++			printk(KERN_INFO "WAC5xx: %s: Not an %s product !!!\n", __func__, wac5xx_pdata[i].platform_name);
++		}
++	}
++
++	printk(KERN_INFO "WAC5xx: %s : GPIO platform init successful!!!\n", __func__);
++	return 0;
++
++err_sw_reset_gpio_request:
++	printk(KERN_INFO "WAC5xx: %s: Freeing sw reset mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++	gpio_free_array(wac5xx_pdata[i].sw_reset_gpios,  wac5xx_pdata[i].nr_sw_reset_gpios);
++err_platform_gpio_request:
++	if (g_mfg_mode) {		
++		if (g_mfg_data == 0) {	/* shipping mode */
++			printk(KERN_INFO "WAC5xx: %s: Freeing shipping mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++			gpio_free_array(wac5xx_pdata[i].shipping_led_gpios, wac5xx_pdata[i].nr_shipping_led_gpios);
++		}
++		else {	/* Manufacturing mode */
++			printk(KERN_INFO "WAC5xx: %s: Freeing mfg mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++			gpio_free_array(wac5xx_pdata[i].mfg_led_gpios, wac5xx_pdata[i].nr_mfg_led_gpios);
++		}
++	} else {
++		printk(KERN_INFO "WAC5xx: %s: Freeing shipping mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++		gpio_free_array(wac5xx_pdata[i].shipping_led_gpios, wac5xx_pdata[i].nr_shipping_led_gpios);
++	}
++	return -1;
++}
++
++static int __init wac5xx_gpios_init(void)
++{
++	if (!machine_is_wac5xx()) {
++		if (platform_gpio_init()) {
++			printk(KERN_INFO "WAC5xx: %s : Error platform init!!!\n", __func__);
++			return -1;
++		}
++	} else {
++		printk(KERN_ERR "WAC5xx: Machine/Product is not WAC5xx, Skipping gpio-init !!!\n");
++		return -1;
++	}
++
++	return 0;
++}
++
++static void platform_gpio_deinit()
++{
++	int i = 0;
++
++	for (i = 0; i < ARRAY_SIZE(wac5xx_pdata); i++) {
++		if (!strcmp(g_product_id, wac5xx_pdata[i].platform_name)) {	/* Match the product-id */
++			if (g_mfg_mode) {
++				printk(KERN_INFO "WAC5xx: %s: Freeing MFG mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++				gpio_free_array(wac5xx_pdata[i].mfg_led_gpios, wac5xx_pdata[i].nr_mfg_led_gpios);
++			} else {
++				printk(KERN_INFO "WAC5xx: %s: Freeing shipping mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++				gpio_free_array(wac5xx_pdata[i].shipping_led_gpios, wac5xx_pdata[i].nr_shipping_led_gpios);
++			}
++			printk(KERN_INFO "WAC5xx: %s: Freeing sw reset mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++			gpio_free_array(wac5xx_pdata[i].sw_reset_gpios,  wac5xx_pdata[i].nr_sw_reset_gpios);
++			break;
++		}
++	}
++}
++
++static void __exit wac5xx_gpios_exit(void)
++{
++	platform_gpio_deinit();
++	free_irq (irq_rst_button, NULL);
++	cancel_work_sync(&reset_button_work);
++	misc_deregister(&button_misc_device);
++}
++module_init(wac5xx_gpios_init);
++module_exit(wac5xx_gpios_exit);
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Venkatesh Perumal <venkatesh.perumal@netgear.com>");
+diff --git a/include/linux/wac5xx_gpio.h b/include/linux/wac5xx_gpio.h
+new file mode 100644
+index 00000000..71bbbedd
+--- /dev/null
++++ b/include/linux/wac5xx_gpio.h
+@@ -0,0 +1,67 @@
++/*
++* wac5xx_gpio.h
++* Created on Jan 31, 2017
++*
++* Copyright (c) 2017, NETGEAR, Inc.
++* 350 East Plumeria, San Jose California, 95134, U.S.A.
++* All rights reserved.
++*
++*
++* This software is the confidential and proprietary information of
++* NETGEAR, Inc. ("Confidential Information"). You shall not
++* disclose such Confidential Information and shall use it only in
++* accordance with the terms of the license agreement you entered into
++* with NETGEAR.
++*
++* @Author : Venkatesh Perumal <venkatesh.perumal@netgear.com>
++* 
++*/
++
++#ifndef _WAC5xx_GPIO_INIT_H
++#define _WAC5xx_GPIO_INIT_H
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/device.h>
++
++/* Factory Reset */
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/sched.h>
++#include <linux/interrupt.h>
++#include <linux/fs.h>
++#include <linux/miscdevice.h>
++#include <linux/string.h>
++#include <linux/errno.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <asm/uaccess.h>
++#include <asm/irq.h>
++#include <asm/mach-types.h>
++#include <linux/gpio.h>
++#include <linux/workqueue.h>
++
++#define MANU_ID_WAC505 "WAC505"
++#define MANU_ID_WAC510 "WAC510"
++#define BUTTON_MINOR 160	/* Major 10, Minor 160, /dev/rst_button */
++
++static void button_press_handler (struct work_struct *);
++static int machine_is_wac5xx(void);
++static int platform_gpio_init(void);
++static void platform_gpio_deinit(void);
++int get_w5xx_platform_led_gpio_num(char *);
++
++struct w5xx_platform_gpio {
++	char *platform_name;
++
++	struct gpio *mfg_led_gpios;
++	int nr_mfg_led_gpios;
++
++	struct gpio *shipping_led_gpios;
++	int nr_shipping_led_gpios;
++
++	struct gpio *sw_reset_gpios;
++	int nr_sw_reset_gpios;
++} g_pdata_gpio_t;
++#endif	/*_WAC5xx_GPIO_INIT_H*/

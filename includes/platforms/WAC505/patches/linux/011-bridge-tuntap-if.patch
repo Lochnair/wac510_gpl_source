@@ -1,0 +1,155 @@
+diff --git a/net/bridge/br.c b/net/bridge/br.c
+index 857467b..6aefe02 100644
+--- a/net/bridge/br.c
++++ b/net/bridge/br.c
+@@ -36,6 +36,7 @@ unsigned int brhttp_redirect_flush_ip = 0;
+ unsigned char brhttp_redirect_cpauth_status[18];
+ unsigned int brhttp_redirect_reset_entry = 0;
+ #endif
++unsigned char br_tuntap_ifname[IFNAMSIZ];
+ 
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+ extern int br_hrdb_init(void);
+@@ -275,7 +276,7 @@ int br_sysctl_call_brhttp_redirect_set_cpauth_status(ctl_table * ctl, int write,
+ }
+ 
+ static
+-int br_sysctl_call_brhttp_redirect_reset_mac_entry(ctl_table * ctl, int write, struct file *filp,
++int br_sysctl_call_brhttp_redirect_reset_mac_entry(ctl_table * ctl, int write,
+                             void __user * buffer, size_t * lenp, loff_t * ppos)
+ {
+         int ret;
+@@ -291,6 +292,41 @@ int br_sysctl_call_brhttp_redirect_reset_mac_entry(ctl_table * ctl, int write, s
+ 
+ #endif
+ 
++extern struct net_device *br_tuntap_dev;
++
++static
++int br_sysctl_call_tuntap_if(ctl_table * ctl, int write,
++                            void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++        int ret;
++
++	ret = proc_dostring(ctl, write, buffer, lenp, ppos);
++
++        if (write) {
++		if (*br_tuntap_ifname == '0')  {
++			printk(KERN_NOTICE "%s(): Releasing tuntap interface \"%s\"\n", __func__, br_tuntap_ifname);
++			dev_put(br_tuntap_dev);
++			br_tuntap_dev = NULL;
++		} else {
++			struct net_device *dev = dev_get_by_name(&init_net, br_tuntap_ifname);
++			if (dev) {
++				br_tuntap_dev = dev;
++				printk(KERN_NOTICE "%s(): Found tuntap interface \"%s\"\n", __func__, br_tuntap_ifname);
++			} else {
++				printk(KERN_NOTICE "%s(): Unable to lookup tuntap interface \"%s\"\n", __func__, br_tuntap_ifname);
++			}
++		}
++        } else {
++		if (br_tuntap_dev) {
++			printk(KERN_NOTICE "%s(): tuntap interface \"%s\"(%p) is registered\n", __func__, br_tuntap_ifname, (void *)br_tuntap_dev);
++		} else {
++			printk(KERN_NOTICE "%s(): tuntap interface is not registered\n", __func__);
++		}
++	}
++
++        return ret;
++}
++
+ static struct ctl_table_header *br_sysctl_header;
+ 
+ static ctl_table br_table[] = {
+@@ -380,6 +416,14 @@ static ctl_table br_table[] = {
+     },
+ 
+ #endif
++    {
++	    .procname       = "bridge-tuntap-if",
++	    .data           = &br_tuntap_ifname,
++	    .maxlen         = sizeof(br_tuntap_ifname),
++	    .mode           = 0644,
++	    .proc_handler   = &br_sysctl_call_tuntap_if,
++    },
++
+    { }
+ };
+ 
+diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
+index 2c4a08b..4bef613 100644
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -44,13 +44,16 @@ extern void br_hrdb_update(const unsigned char *mac, unsigned char event_sent);
+ #define HTTP_PKT    80
+ #define HTTPS_PKT   443
+ #define DNS_PKT     53
+-#define DHCP_PKT    67
++#define DHCPC_PKT   67
++#define DHCPS_PKT   68
+ #define ICMP_PKT    1
+ #define ARP_PKT     0x0806
+ #define NETBIOS_PKT 137
+ #define LKLOCAL_PKT 5355
+ #define INVALID_PKT 0xFFFF
+ 
++struct net_device *br_tuntap_dev;
++
+ struct parse_pkt {
+ 	u16 type;
+ 	u16 dport;
+@@ -249,11 +252,16 @@ int br_handle_frame_finish(struct sk_buff *skb)
+ 		skb2 = skb;
+ 
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+-	if (SHOULD_PARSE(skb->dev, skb)) {
++	{
+ 		struct parse_pkt pkt = PARSE_PACKET(skb);
+ 		switch (pkt.type) {
+ 		case IPPROTO_TCP:
+ 		{
++			/* If the packet is not be processed through
++			 * captive-portal's firewall */
++			if (!SHOULD_PARSE(skb->dev, skb)) {
++				break;
++			}
+ 			switch (pkt.dport) {
+ 			/* HACK: All packets hits IPtables, this makes
+ 			 * the mark rule execute even before the dst
+@@ -308,10 +316,22 @@ int br_handle_frame_finish(struct sk_buff *skb)
+ 		{
+ 			switch (pkt.dport) {
+ 			case DNS_PKT:
+-			case DHCP_PKT:
++				break;
++			case DHCPC_PKT:
++			case DHCPS_PKT:
++				/* For DHCP finger printing */
++				if (br_tuntap_dev &&
++				    (skb2 = skb_copy(skb, GFP_ATOMIC))) {
++					skb_push(skb2, ETH_HLEN);
++					skb2->dev = br_tuntap_dev;
++					dev_queue_xmit(skb2);
++					skb2 = NULL;
++				}
+ 				break;
+ 			default:
+-				goto drop;
++				if (SHOULD_PARSE(skb->dev, skb)) {
++					goto drop;
++				}
+ 			}
+ 		}
+ 		break;
+@@ -322,8 +342,9 @@ int br_handle_frame_finish(struct sk_buff *skb)
+ 
+ 		case INVALID_PKT:
+ 		default:
+-			goto drop;
+-
++			if (SHOULD_PARSE(skb->dev, skb)) {
++				goto drop;
++			}
+ 		}
+ 	}
+ #endif

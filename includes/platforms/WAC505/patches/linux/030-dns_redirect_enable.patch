@@ -1,0 +1,86 @@
+diff --git a/net/bridge/br.c b/net/bridge/br.c
+index c2b7557..2ae2323 100644
+--- a/net/bridge/br.c
++++ b/net/bridge/br.c
+@@ -29,6 +29,7 @@ int briso_multicast_enabled = 0;
+ #endif
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+ int brhttp_redirect_enabled = 0;
++int brdns_redirect_enabled = 0;
+ unsigned char brhttp_redirect_add_mac[16];
+ unsigned char brhttp_redirect_del_mac[16];
+ int brhttp_redirect_flush_mac = 0;
+@@ -121,6 +122,26 @@ int br_sysctl_call_brhttp_redirect_enabled(ctl_table * ctl, int write,
+ 
+    return ret;
+ }
++static
++int br_sysctl_call_brdns_redirect_enabled(ctl_table * ctl, int write,
++               void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++   int ret;
++
++   ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++   if (write) {
++        if(*(int *)(ctl->data))
++           *(int *)(ctl->data) = 1;
++
++       if (brdns_redirect_enabled)
++           printk(KERN_NOTICE "br: DNS redirect enabled\n");
++       else
++           printk(KERN_NOTICE "br: DNS redirect disabled\n");
++   }
++
++   return ret;
++}
+ 
+ static
+ int br_sysctl_call_brhttp_redirect_add_ip(ctl_table * ctl, int write,
+@@ -402,6 +423,13 @@ static ctl_table br_table[] = {
+        .mode       = 0644,
+        .proc_handler   = &br_sysctl_call_brhttp_redirect_enabled,
+    },
++    {
++       .procname   = "bridge-dns-redirect-enabled",
++       .data       = &brdns_redirect_enabled,
++       .maxlen     = sizeof(int),
++       .mode       = 0644,
++       .proc_handler   = &br_sysctl_call_brdns_redirect_enabled,
++   },
+    {
+        .procname   = "bridge-http-redirect-add-mac",
+        .data       = &brhttp_redirect_add_mac,
+diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
+index dbd3ec3..3603b86 100644
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -31,6 +31,7 @@
+ 
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+ extern int brhttp_redirect_enabled;
++extern int brdns_redirect_enabled;
+ 
+ extern int br_hrdb_check(const unsigned char *mac, unsigned char *event_sent);
+ extern void br_hrdb_update(const unsigned char *mac, unsigned char event_sent);
+@@ -105,6 +106,8 @@ struct parse_pkt {
+ #define SHOULD_PARSE(indev, skb)				\
+         (brhttp_redirect_enabled && IS_WIFI_VAP(indev) &&	\
+ 	  IS_CP_ENABLED(indev) && br_hrdb_check(eth_hdr(skb)->h_source, NULL))
++#define SHOULD_PARSE_DNS(indev, skb)				\
++        (brdns_redirect_enabled && (IS_WIFI_VAP(indev)))
+ #endif /* CONFIG_HTTP_REDIRECT_ENABLED */
+ 
+ /* Hook for brouter */
+@@ -323,6 +326,11 @@ int br_handle_frame_finish(struct sk_buff *skb)
+ 			switch (pkt.dport) {
+             case URL_DNS_PKT:
+ 			case DNS_PKT:
++            if (!SHOULD_PARSE_DNS(skb->dev, skb)) {
++                break;
++            }
++            memcpy((unsigned char *)dest, br->dev->dev_addr, ETH_ALEN);
++            skb->pkt_type = PACKET_HOST;
+ 				break;
+ 			case DHCPC_PKT:
+ 			case DHCPS_PKT:

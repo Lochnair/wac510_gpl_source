@@ -1,0 +1,179 @@
+diff --git a/arch/arm/cpu/armv7/qca/cmd_bootqca.c b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+index a018693..209a162 100644
+--- a/arch/arm/cpu/armv7/qca/cmd_bootqca.c
++++ b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+@@ -22,6 +22,7 @@
+ #include <linux/mtd/ubi.h>
+ #include <asm/arch-ipq40xx/smem.h>
+ #include <mmc.h>
++#include <asm/io.h>
+ #include "ipq40xx_cdp.h"
+ 
+ #define DLOAD_MAGIC_COOKIE	0x10
+@@ -90,15 +91,50 @@ static int inline do_dumpipq_data(void)
+  */
+ static int set_fs_bootargs(int *fs_on_nand)
+ {
+-	char *bootargs;
++	char *bootargs = NULL, *spi_bootargs = NULL;
++	unsigned long boot_cnt;
++	char cmd[32], *boot_cnt_str;
++
++#define nand_rootfs   "ubi.mtd=" IPQ_ROOT_FS_PART_NAME IPQ_ROOT_FS_MTD_PART_NAME " root=mtd:ubi_rootfs rootfstype=squashfs "
++	if (getenv("primary") == NULL) {
++		printf("Setting NVRAM variables!!!!!\n");
++		setenv("primary", "0");
++		setenv("secondary", "3800000");
++		setenv("fw_upgrade", "0");
++		setenv("boot_cnt", "0");
++		setenv("proceed_upgrade", "0");
++		saveenv();
++	}
++
++	boot_cnt_str = getenv("boot_cnt");
++	boot_cnt = boot_cnt_str ? simple_strtoul(boot_cnt_str, NULL, 10) : 0;
++
++	memset(cmd, '\0', sizeof(cmd));
++	sprintf(cmd, "setenv boot_cnt %u", boot_cnt + 1);
++	if (run_command(cmd, 0) != CMD_RET_SUCCESS) {
++		printf("%s: %s failed !!\n", __func__, cmd);
++	}
++	if (run_command("saveenv", 0) != CMD_RET_SUCCESS) {
++		printf("%s: saveenv failed !!\n", __func__);
++	}
++
++	if (simple_strtol((getenv("primary")), NULL, 16) == simple_strtol((getenv("secondary")), NULL, 16)) {
++		setenv("primary", getenv("bootpart"));
++		run_command("setenv secondary", 0);
++		saveenv();
++	}
+ 
+-#define nand_rootfs	"ubi.mtd=" IPQ_ROOT_FS_PART_NAME " root=mtd:ubi_rootfs rootfstype=squashfs"
++	if (simple_strtol((getenv("primary")), NULL, 16) == 0) {
++		spi_bootargs = "ubi.mtd=rootfs root=mtd:ubi_rootfs rootfstype=squashfs mtdparts=spi0.1:56m(rootfs),56m(rootfs_1),15m(var_config),768k(Oops_log)";
++	} else {
++		spi_bootargs = "ubi.mtd=rootfs_1 root=mtd:ubi_rootfs rootfstype=squashfs mtdparts=spi0.1:56m(rootfs),56m(rootfs_1),15m(var_config),768k(Oops_log)";
++	}
+ 
+ 	if (sfi->flash_type == SMEM_BOOT_SPI_FLASH) {
+ 		if (((sfi->rootfs.offset == 0xBAD0FF5E) &&
+-		(gboard_param->nor_emmc_available == 0)) ||
+-			get_which_flash_param("rootfs")) {
+-			bootargs = nand_rootfs;
++					(gboard_param->nor_emmc_available == 0)) ||
++				get_which_flash_param("rootfs")) {
++			bootargs = spi_bootargs;
+ 			*fs_on_nand = 1;
+ 			gboard_param->nor_nand_available = 1;
+ 			if (getenv("fsbootargs") == NULL)
+@@ -120,7 +156,7 @@ static int set_fs_bootargs(int *fs_on_nand)
+ 		return -EINVAL;
+ 	}
+ 
+-	return run_command("setenv bootargs ${bootargs} ${fsbootargs} rootwait", 0);
++	return run_command("setenv bootargs ${bootargs} ${fsbootargs} ${mfgbootargs} rootwait", 0);
+ }
+ 
+ int config_select(unsigned int addr, const char **config, char *rcmd, int rcmd_size)
+@@ -316,6 +352,51 @@ static int do_boot_signedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const a
+ 	return CMD_RET_SUCCESS;
+ }
+ 
++#ifdef CONFIG_BOOTCOUNT_LIMIT
++void bootcount_store(ulong a)
++{
++    writel((BOOTCOUNT_MAGIC & 0xffff0000) | a, CONFIG_SYS_BOOTCOUNT_ADDR);
++}
++
++ulong bootcount_load(void)
++{
++    u32 tmp = readl(CONFIG_SYS_BOOTCOUNT_ADDR);
++
++    if ((tmp & 0xffff0000) != (BOOTCOUNT_MAGIC & 0xffff0000))
++        return 0;
++    else
++        return tmp & 0x0000ffff;
++}
++#endif
++
++#define BOOT_MAX 5
++static int firmware_upgrade(void)
++{
++	char swap_addr[10] = {0};
++	int ret = 0;
++	unsigned long boot_cnt;
++	char *boot_cnt_str;
++
++	boot_cnt_str = getenv("boot_cnt");
++	printf("Boot count=%s\n", boot_cnt_str);
++	boot_cnt = boot_cnt_str ? simple_strtoul(boot_cnt_str, NULL, 10) : 0;
++	if (boot_cnt > BOOT_MAX) {
++		printf("Switching secondary partition\n");
++		strcpy(swap_addr, getenv("primary"));
++		setenv("primary", getenv("secondary"));
++		setenv("secondary", swap_addr);
++		run_command("setenv bootargs", 0);
++		run_command("setenv fsbootargs", 0);
++		run_command("setenv boot_cnt 0", 0);
++		saveenv();
++		if ((ret = set_fs_bootargs(&ipq_fs_on_nand))) {
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
+ static int do_boot_unsignedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
+ {
+ #ifdef CONFIG_QCA_APPSBL_DLOAD
+@@ -394,7 +475,8 @@ static int do_boot_unsignedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const
+ 		if ((sfi->rootfs.offset == 0xBAD0FF5E) ||
+ 			get_which_flash_param("rootfs")) {
+ 			if (sfi->rootfs.offset == 0xBAD0FF5E) {
+-				sfi->rootfs.offset = 0;
++				firmware_upgrade();
++				sfi->rootfs.offset = simple_strtol((getenv("primary")), NULL, 16);
+ 				sfi->rootfs.size = IPQ_NAND_ROOTFS_SIZE;
+ 			}
+ 			snprintf(runcmd, sizeof(runcmd),
+diff --git a/arch/arm/include/asm/arch-ipq40xx/smem.h b/arch/arm/include/asm/arch-ipq40xx/smem.h
+index 21085b4..5cb7dd3 100644
+--- a/arch/arm/include/asm/arch-ipq40xx/smem.h
++++ b/arch/arm/include/asm/arch-ipq40xx/smem.h
+@@ -16,7 +16,7 @@
+ 
+ #define RAM_PARTITION_SDRAM 14
+ #define RAM_PARTITION_SYS_MEMORY 1
+-#define IPQ_NAND_ROOTFS_SIZE (64 << 20)
++#define IPQ_NAND_ROOTFS_SIZE (56 << 20)
+ 
+ #define SOCINFO_VERSION_MAJOR(ver) ((ver & 0xffff0000) >> 16)
+ #define SOCINFO_VERSION_MINOR(ver) (ver & 0x0000ffff)
+diff --git a/include/configs/ipq40xx_cdp.h b/include/configs/ipq40xx_cdp.h
+index 12449be..1241da0 100644
+--- a/include/configs/ipq40xx_cdp.h
++++ b/include/configs/ipq40xx_cdp.h
+@@ -157,6 +157,7 @@ typedef struct {
+ #endif
+ 
+ #define IPQ_ROOT_FS_PART_NAME		"rootfs"
++#define IPQ_ROOT_FS_MTD_PART_NAME	" mtdparts=spi0.1:56m(rootfs),56m(rootfs),15m(var_config),768k(Oops_log)"
+ 
+ /* Environment */
+ #define CONFIG_IPQ40XX_ENV
+@@ -295,11 +296,13 @@ typedef struct {
+ #define CONFIG_SYS_MMC_ENV_DEV  0
+ #endif
+ 
+-
+ #define CONFIG_MTD_DEVICE
+ #define CONFIG_MTD_PARTITIONS
+ #define CONFIG_CMD_MTDPARTS
+ 
++#undef CONFIG_BOOTCOUNT_LIMIT
++#undef CONFIG_SYS_BOOTCOUNT_ADDR
++
+ #define CONFIG_RBTREE		/* for ubi */
+ #define CONFIG_CMD_UBI
+ #define CONFIG_BOOTCOMMAND	"bootipq"

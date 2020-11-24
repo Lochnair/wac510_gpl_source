@@ -1,0 +1,12 @@
+diff --git a/arch/arm/mm/mmu.c b/arch/arm/mm/mmu.c
+index 1b80dbf..ce489a6 100644
+--- a/arch/arm/mm/mmu.c
++++ b/arch/arm/mm/mmu.c
+@@ -1514,6 +1514,7 @@ void __init paging_init(const struct machine_desc *mdesc)
+ 	build_mem_type_table();
+ 	prepare_page_table();
+ 	map_lowmem();
++	mark_rodata_ro();
+ 	dma_contiguous_remap();
+ 	devicemaps_init(mdesc);
+ 	kmap_init();

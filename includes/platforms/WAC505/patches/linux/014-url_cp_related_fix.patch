@@ -1,0 +1,20 @@
+diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
+index 4c890ee..dbd3ec3 100644
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -40,6 +40,7 @@ extern void br_hrdb_update(const unsigned char *mac, unsigned char event_sent);
+ #define IS_CP_ENABLED(dev) (dev->priv_flags & IFF_CAPTIVE_FLAG)
+ 
+ #define AUTHSRV_PKT 3001
++#define URL_DNS_PKT 9930
+ #define WIFIDOG_PKT 2060 /* FIXME */
+ #define WIFIDOG_PKT1 2061 /* FIXME */
+ #define HTTP_PKT    80
+@@ -320,6 +321,7 @@ int br_handle_frame_finish(struct sk_buff *skb)
+ 		case IPPROTO_UDP:
+ 		{
+ 			switch (pkt.dport) {
++            case URL_DNS_PKT:
+ 			case DNS_PKT:
+ 				break;
+ 			case DHCPC_PKT:

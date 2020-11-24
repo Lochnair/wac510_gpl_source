@@ -1,0 +1,278 @@
+diff --git a/arch/arm/boot/dts/qcom-ipq40xx-ap.dk07.1.dtsi b/arch/arm/boot/dts/qcom-ipq40xx-ap.dk07.1.dtsi
+index 3ff2ac3..9efa133 100644
+--- a/arch/arm/boot/dts/qcom-ipq40xx-ap.dk07.1.dtsi
++++ b/arch/arm/boot/dts/qcom-ipq40xx-ap.dk07.1.dtsi
+@@ -85,6 +85,7 @@
+ 				};
+ 			};
+ 
++            /*
+ 			spi_1_pins: spi_1_pinmux {
+ 				mux {
+ 					pins = "gpio44", "gpio46", "gpio47";
+@@ -112,6 +113,7 @@
+ 					output-high;
+ 				};
+ 			};
++            */
+ 
+ 			i2c_0_pins: i2c_0_pinmux {
+ 				mux {
+@@ -198,7 +200,8 @@
+ 			status = "ok";
+ 		};
+ 
+-		spi_1: spi@78b6000 { /* BLSP1 QUP2 */
++        /*
++		spi_1: spi@78b6000 {
+ 			pinctrl-0 = <&spi_1_pins>;
+ 			pinctrl-names = "default";
+ 			status = "disabled";
+@@ -209,6 +212,7 @@
+ 				spi-max-frequency = <24000000>;
+ 			};
+ 		};
++        */
+ 
+ 		tcsr: tcsr@194b000 {
+ 			status = "ok";
+diff --git a/arch/arm/mach-qcom/wac5xx_gpio_init.c b/arch/arm/mach-qcom/wac5xx_gpio_init.c
+index 2502176..56d0d2b 100644
+--- a/arch/arm/mach-qcom/wac5xx_gpio_init.c
++++ b/arch/arm/mach-qcom/wac5xx_gpio_init.c
+@@ -14,7 +14,7 @@
+ * with NETGEAR.
+ *
+ * @Author : Venkatesh Perumal <venkatesh.perumal@netgear.com>
+-* 
++*
+ */
+ 
+ #include <linux/wac5xx_gpio.h>
+@@ -43,7 +43,7 @@ struct proc_dir_entry *proc_entry_ledstatus = NULL;
+ EXPORT_SYMBOL(g_product_id);
+ EXPORT_SYMBOL(ctrl_all_led_off);
+ 
+-int write_proc_ledControl(struct file *filp, const char *__user_buf, size_t len, loff_t *offp) 
++int write_proc_ledControl(struct file *filp, const char *__user_buf, size_t len, loff_t *offp)
+ {
+         if(len >= LED_STATUS_MAXSIZE) {
+                 procfs_buffer_size = LED_STATUS_MAXSIZE;
+@@ -132,6 +132,12 @@ static struct miscdevice button_misc_device = {
+     &button_fops,
+ };
+ 
++static int misc_gpio_init(struct gpio *misc_gpio)
++{
++    /* TBD: Add functionality if needed for WAC540 Misc gpio */
++    return 0;
++}
++
+ static int rst_button_init(struct gpio *reset_gpio)
+ {
+     if (misc_register (&button_misc_device)) {
+@@ -217,10 +223,48 @@ static struct gpio w510_sw_reset_gpios[] = {
+     { 63, GPIOF_IN | GPIOF_INIT_HIGH | GPIOF_EXPORT, "SW_RESET_BUTTON" }, /* default to OFF */
+ };
+ 
++/* WAC540 Platform level initialization */
++
++/* WAC540 Manufacturing GPIO Initializations */
++static struct gpio w540_mfg_mode_leds_gpios[]  = {
++    { 22, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_2_4G_GREEN" }, /* default to OFF */
++    { 23, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_2_4G_BLUE" }, /* default to OFF */
++    { 31, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_5G_GREEN" }, /* default to OFF */
++    { 32, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_5G_BLUE" }, /* default to OFF */
++    { 34, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_5G_EXT_GREEN" }, /* default to OFF */
++    { 35, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_5G_EXT_BLUE" }, /* default to OFF */
++    { 28, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "PWR_LED_AMBER" }, /* default to ON */
++    { 29, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "PWR_LED_BLUE" }, /* default to OFF */
++    { 30, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "PWR_LED_GREEN" }, /* default to OFF */
++};
++
++/* WAC540 Shipping mode GPIO Initializations */
++static struct gpio w540_shipping_mode_leds_gpios[]  = {
++    { 22, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_2_4G_GREEN" }, /* default to OFF */
++    { 23, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_2_4G_BLUE" }, /* default to OFF */
++    { 31, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_5G_GREEN" }, /* default to OFF */
++    { 32, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_5G_BLUE" }, /* default to OFF */
++    { 34, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_5G_EXT_GREEN" }, /* default to OFF */
++    { 35, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "WIFI_LED_5G_EXT_BLUE" }, /* default to OFF */
++    { 28, GPIOF_OUT_INIT_HIGH | GPIOF_EXPORT, "PWR_LED_AMBER" }, /* default to ON */
++    { 29, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "PWR_LED_BLUE" }, /* default to OFF */
++    { 30, GPIOF_OUT_INIT_LOW | GPIOF_EXPORT, "PWR_LED_GREEN" }, /* default to OFF */
++};
++
++static struct gpio w540_sw_reset_gpios[]  = {
++    { 18, GPIOF_IN | GPIOF_INIT_HIGH | GPIOF_EXPORT, "SW_RESET_BUTTON" }, /* default to OFF */
++};
++
++static struct gpio w540_sw_misc_gpios[] = {
++    { 47, GPIOF_IN | GPIOF_INIT_HIGH | GPIOF_EXPORT, "POE_PWR_DET" }, /* default to OFF */
++    { 48, GPIOF_IN | GPIOF_INIT_HIGH | GPIOF_EXPORT, "APD_PWR_DET" }, /* default to OFF */
++    { 50, GPIOF_IN | GPIOF_INIT_HIGH | GPIOF_EXPORT, "POE_AF_AT" }, /* default to OFF */
++};
++
+ static int get_led_gpio_num(const struct gpio *array, int num, char *label)
+ {
+     int i = 0;
+-    
++
+     for (i = 0; i < num; i++, array++) {
+         if (!strcmp(array->label, label)) {
+ 			return (array->gpio);
+@@ -228,7 +272,7 @@ static int get_led_gpio_num(const struct gpio *array, int num, char *label)
+     }
+ }
+ 
+-int get_w5xx_platform_led_gpio_num(char *gpio_label) 
++int get_w5xx_platform_led_gpio_num(char *gpio_label)
+ {
+ 	return get_led_gpio_num(current_p_gpio, current_p_gpio_num, gpio_label);
+ }
+@@ -254,6 +298,17 @@ struct w5xx_platform_gpio wac5xx_pdata[] = {
+ 		.nr_shipping_led_gpios = ARRAY_SIZE(w510_shipping_mode_leds_gpios),
+ 		.nr_sw_reset_gpios = ARRAY_SIZE(w510_sw_reset_gpios),
+ 	},
++    {
++        .platform_name = "WAC540",
++        .mfg_led_gpios = w540_mfg_mode_leds_gpios,
++        .shipping_led_gpios = w540_shipping_mode_leds_gpios,
++        .sw_reset_gpios = w540_sw_reset_gpios,
++        .sw_misc_gpios = w540_sw_misc_gpios,
++        .nr_mfg_led_gpios = ARRAY_SIZE(w540_mfg_mode_leds_gpios),
++        .nr_shipping_led_gpios = ARRAY_SIZE(w540_shipping_mode_leds_gpios),
++        .nr_sw_reset_gpios = ARRAY_SIZE(w540_sw_reset_gpios),
++        .nr_sw_misc_gpios = ARRAY_SIZE(w540_sw_misc_gpios),
++    },
+ };
+ 
+ static int machine_is_wac5xx()
+@@ -324,7 +379,22 @@ static int platform_gpio_init()
+ 			if (ret != 0) {
+ 				printk(KERN_ERR "WAC5xx: %s: %d: failed with err %d\n", __func__, __LINE__, ret);
+ 				goto err_sw_reset_gpio_request;
+-			}
++            }
++
++            if(!strncmp(wac5xx_pdata[i].platform_name, "WAC540", 6)) {
++                ret = gpio_request_array(wac5xx_pdata[i].sw_misc_gpios, wac5xx_pdata[i].nr_sw_misc_gpios);
++                if(ret != 0) {
++                    printk(KERN_ERR "WAC5xx: %s: %d: failed with err %d\n", __func__, __LINE__, ret);
++                    goto err_sw_reset_gpio_request;
++                }
++
++                ret = misc_gpio_init(wac5xx_pdata[i].sw_misc_gpios);
++                if(ret != 0) {
++                    printk(KERN_ERR "WAC5xx: %s: %d: failed with err %d\n", __func__, __LINE__, ret);
++                    goto err_sw_misc_gpio_request;
++
++                }
++            }
+ 			break;
+ 		} else {	/* If product-Id is not WAC5xx */
+ 			printk(KERN_INFO "WAC5xx: %s: Not an %s product !!!\n", __func__, wac5xx_pdata[i].platform_name);
+@@ -334,11 +404,14 @@ static int platform_gpio_init()
+ 	printk(KERN_INFO "WAC5xx: %s : GPIO platform init successful!!!\n", __func__);
+ 	return 0;
+ 
++err_sw_misc_gpio_request:
++    printk(KERN_INFO "WAC5xx: %s: Freeing sw misc GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++    gpio_free_array(wac5xx_pdata[i].sw_misc_gpios, wac5xx_pdata[i].nr_sw_misc_gpios);
+ err_sw_reset_gpio_request:
+ 	printk(KERN_INFO "WAC5xx: %s: Freeing sw reset mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
+ 	gpio_free_array(wac5xx_pdata[i].sw_reset_gpios,  wac5xx_pdata[i].nr_sw_reset_gpios);
+ err_platform_gpio_request:
+-	if (g_mfg_mode) {		
++	if (g_mfg_mode) {
+ 		if (g_mfg_data == 0) {	/* shipping mode */
+ 			printk(KERN_INFO "WAC5xx: %s: Freeing shipping mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
+ 			gpio_free_array(wac5xx_pdata[i].shipping_led_gpios, wac5xx_pdata[i].nr_shipping_led_gpios);
+@@ -385,6 +458,11 @@ static void platform_gpio_deinit()
+ 			}
+ 			printk(KERN_INFO "WAC5xx: %s: Freeing sw reset mode GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
+ 			gpio_free_array(wac5xx_pdata[i].sw_reset_gpios,  wac5xx_pdata[i].nr_sw_reset_gpios);
++
++            if(!strncmp(wac5xx_pdata[i].platform_name, "WAC540", 6)) {
++                printk(KERN_INFO "WAC5xx: %s: Freeing misc GPIO %s !!!\n", __func__, wac5xx_pdata[i].platform_name);
++                gpio_free_array(wac5xx_pdata[i].sw_misc_gpios,  wac5xx_pdata[i].nr_sw_misc_gpios);
++            }
+ 			break;
+ 		}
+ 	}
+diff --git a/drivers/leds/net-blink.c b/drivers/leds/net-blink.c
+index 0208484..3db6f2b 100644
+--- a/drivers/leds/net-blink.c
++++ b/drivers/leds/net-blink.c
+@@ -36,6 +36,10 @@
+ #define BLINK_OFF_TIME 100
+ 
+ extern int ctrl_all_led_off;
++extern char g_product_id[7];
++int g_blink_led_on;
++int g_blink_led_off;
++
+ typedef enum _BLINK_STATE {
+     BLINK_DONE = 0,
+     BLINK_LED_ON = 1,
+@@ -55,12 +59,12 @@ _start:
+ 	switch(blink->cur_state) {
+ 		case BLINK_DONE:
+ 			blink->cur_state = BLINK_LED_OFF;
+-			gpio_set_value(blink->gpio, W710_LED_OFF);
++			gpio_set_value(blink->gpio, g_blink_led_off);
+ 			mod_timer(&blink->timer, jiffies + msecs_to_jiffies(BLINK_OFF_TIME));
+ 			break;
+ 		case BLINK_LED_OFF:
+ 			blink->cur_state = BLINK_LED_ON;
+-			gpio_set_value(blink->gpio, W710_LED_ON);
++			gpio_set_value(blink->gpio, g_blink_led_on);
+ 			mod_timer(&blink->timer, jiffies + msecs_to_jiffies(BLINK_ON_TIME));
+ 			break;
+ 		case BLINK_LED_ON:
+@@ -96,6 +100,15 @@ net_blink_init (int gpio, int brightness)
+ 		return NULL;
+ 	}
+ 
++    if (!strncmp(g_product_id, "WAC540", 6)) {
++        g_blink_led_on = 1;
++        g_blink_led_off = 0;
++    } else if (!strncmp(g_product_id, "WAC510", 6) ||
++               !strncmp(g_product_id, "WAC505", 6)) {
++        g_blink_led_on = 0;
++        g_blink_led_off = 1;
++    }
++
+     blink->gpio = gpio;
+ 	init_timer(&blink->timer);
+ 	blink->timer.function = blink_timer_function;
+@@ -108,7 +121,7 @@ EXPORT_SYMBOL(net_blink_init);
+ 
+ int net_blink_exit (struct net_blink_data *blink)
+ {
+-	gpio_set_value(blink->gpio, W710_LED_OFF);
++	gpio_set_value(blink->gpio, g_blink_led_off);
+ 	del_timer_sync(&blink->timer);
+ 	kfree(blink);
+ 
+diff --git a/include/linux/wac5xx_gpio.h b/include/linux/wac5xx_gpio.h
+index 71bbbed..e071c58 100644
+--- a/include/linux/wac5xx_gpio.h
++++ b/include/linux/wac5xx_gpio.h
+@@ -44,6 +44,7 @@
+ 
+ #define MANU_ID_WAC505 "WAC505"
+ #define MANU_ID_WAC510 "WAC510"
++#define MANU_ID_WAC540 "WAC540"
+ #define BUTTON_MINOR 160	/* Major 10, Minor 160, /dev/rst_button */
+ 
+ static void button_press_handler (struct work_struct *);
+@@ -63,5 +64,8 @@ struct w5xx_platform_gpio {
+ 
+ 	struct gpio *sw_reset_gpios;
+ 	int nr_sw_reset_gpios;
++
++    struct gpio *sw_misc_gpios;
++    int nr_sw_misc_gpios;
+ } g_pdata_gpio_t;
+ #endif	/*_WAC5xx_GPIO_INIT_H*/

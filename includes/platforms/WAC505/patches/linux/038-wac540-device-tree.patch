@@ -1,0 +1,17 @@
+diff --git a/arch/arm/boot/dts/qcom-ipq40xx-ap.dk07.1.dtsi b/arch/arm/boot/dts/qcom-ipq40xx-ap.dk07.1.dtsi
+index f800d9c..4358699 100644
+--- a/arch/arm/boot/dts/qcom-ipq40xx-ap.dk07.1.dtsi
++++ b/arch/arm/boot/dts/qcom-ipq40xx-ap.dk07.1.dtsi
+@@ -259,6 +259,12 @@
+ 				reg = <0x40>;
+ 				status = "disabled";
+ 			};
++
++            lm75: lm75@4A {
++                compatible = "lm75";
++                reg = <0x4A>;
++                status = "ok";
++            };
+ 		};
+ 
+ 		qcom_crypto: qcrypto@8e20000 {

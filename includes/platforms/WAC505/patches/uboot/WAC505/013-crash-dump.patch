@@ -1,0 +1,305 @@
+diff --git a/arch/arm/cpu/armv7/qca/cmd_bootqca.c b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+index e3e16d7..f5297e2 100644
+--- a/arch/arm/cpu/armv7/qca/cmd_bootqca.c
++++ b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+@@ -72,6 +72,14 @@ static int inline do_dumpipq_data(void)
+ 	uint64_t etime;
+ 
+ 	if (run_command("dumpipq_data", 0) != CMD_RET_SUCCESS) {
++                if (run_command("setenv crash_status 2", 0) != CMD_RET_SUCCESS) {
++                        printf("setenv crash_status 2 fialed\n");
++                        return CMD_RET_FAILURE;
++                }
++                if (run_command("saveenv", 0) != CMD_RET_SUCCESS) {
++                        printf("%s: saveenv failed !!\n", __func__);
++                }
++
+ 		printf("\nAuto crashdump saving failed!"
+ 		"\nPress any key within 10s to take control of U-Boot");
+ 
+@@ -427,6 +435,7 @@ static int do_boot_signedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const a
+ 
+ static int do_boot_unsignedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
+ {
++
+ #ifdef CONFIG_QCA_APPSBL_DLOAD
+ 	uint64_t etime;
+ #endif
+diff --git a/arch/arm/cpu/armv7/qca/cmd_dumpqca_data.c b/arch/arm/cpu/armv7/qca/cmd_dumpqca_data.c
+index 0d84f4e..3b10b9f 100644
+--- a/arch/arm/cpu/armv7/qca/cmd_dumpqca_data.c
++++ b/arch/arm/cpu/armv7/qca/cmd_dumpqca_data.c
+@@ -22,65 +22,132 @@
+ #include <mmc.h>
+ #include <asm/errno.h>
+ #include <linux/time.h>
++
++#define CONFIG_SYS_FLASH_BLOCK_SIZE     0x20000
++#define MANUDATA_PARTITION_OFFSET       0x700000
++#define MAX_NUM 999
++#define MIN_NUM 100
++
+ DECLARE_GLOBAL_DATA_PTR;
+ 
++int get_board_mac(char *brd_mac_addr)
++{
++    unsigned char sectorBuff[CONFIG_SYS_FLASH_BLOCK_SIZE];
++    int i;
++    char runcmd[255] ;
++
++    memset(sectorBuff, 0, CONFIG_SYS_FLASH_BLOCK_SIZE);
++    snprintf(runcmd, sizeof(runcmd), "nand read 0x%x 0x%x 0x%x", (uint)sectorBuff, (uint)MANUDATA_PARTITION_OFFSET, sizeof(sectorBuff));
++
++    if (run_command(runcmd, 0) != CMD_RET_SUCCESS){
++        printf("run_command failed !!\n");
++        return 0;
++    }
++
++    i = 0;
++    printf("\nMAC %s: %02X:%02X:%02X:%02X:%02X:%02X", __func__,
++                    sectorBuff[i], sectorBuff[i+1], sectorBuff[i+2],
++                    sectorBuff[i+3], sectorBuff[i+4], sectorBuff[i+5]);
++    snprintf(brd_mac_addr, sizeof(brd_mac_addr), "%02x%02x%02x%02x%02x%02x",
++                    sectorBuff[i], sectorBuff[i+1], sectorBuff[i+2],
++                    sectorBuff[i+3], sectorBuff[i+4], sectorBuff[i+5]);
++
++    return 0;
++}
++
++
+ static int do_dumpqca_data(cmd_tbl_t *cmdtp, int flag, int argc,
+ 				char *const argv[])
+ {
+ 	char runcmd[128];
+ 	char *serverip = NULL;
+ 	/* dump to root of TFTP server if none specified */
+-	char *dumpdir;
++	char *dumpdir, *crash_magic = NULL;
+ 	uint32_t memaddr;
+ 	int ret;
+ 	char buf;
+ 
+-	if (argc == 2) {
+-		serverip = argv[1];
+-		printf("Using given serverip %s\n", serverip);
+-		setenv("serverip", serverip);
+-	} else {
+-		serverip = getenv("serverip");
+-		if (serverip != NULL) {
+-			printf("Using serverip from env %s\n", serverip);
+-		} else {
+-			printf("\nServer ip not found, run dhcp or configure\n");
+-			return CMD_RET_FAILURE;
+-		}
+-	}
+-
+-	if ((dumpdir = getenv("dumpdir")) != NULL) {
+-		printf("Using directory %s in TFTP server\n", dumpdir);
+-	} else {
+-		dumpdir = "";
+-		printf("Env 'dumpdir' not set. Using / dir in TFTP server\n");
+-	}
+-
+-	printf("\nProcessing dumps.....\n");
+-	ret = scm_call(SCM_SVC_FUSE, QFPROM_IS_AUTHENTICATE_CMD,
+-				NULL, 0, &buf, sizeof(char));
+-	if (ret == 0 && buf == 1) {
+-		/*
+-		* Dumps CPU_CONTEXT_DUMP_BASE to gd->ram_size.
+-		*/
+-		memaddr = CONFIG_CPU_CONTEXT_DUMP_BASE;
+-		gd->ram_size = CONFIG_CPU_CONTEXT_DUMP_SIZE;
+-		snprintf(runcmd, sizeof(runcmd), "tftpput 0x%x 0x%x %s/%s",
+-			memaddr, (unsigned int)gd->ram_size,
+-			dumpdir, "EBICS0.bin");
+-	} else {
+-		/*
+-		* Dumps CONFIG_SYS_SDRAM_BASE to gd->ram_size.
+-		*/
+-		memaddr = CONFIG_SYS_SDRAM_BASE;
+-		snprintf(runcmd, sizeof(runcmd), "tftpput 0x%x 0x%x %s/%s",
+-			memaddr, (unsigned int)gd->ram_size,
+-			dumpdir, "EBICS0.bin");
+-	}
+-
+-	if (run_command(runcmd, 0) != CMD_RET_SUCCESS)
+-		return CMD_RET_FAILURE;
+-	udelay(10000); /* give some delay for server */
++#ifdef CONFIG_QCA_APPSBL_DLOAD
++        crash_magic = getenv("crash_magic");
++        if (!(strncmp(crash_magic, "1", 2))) {
++                if (argc == 2) {
++                        serverip = argv[1];
++                        printf("Using given serverip %s\n", serverip);
++                        setenv("serverip", serverip);
++                } else {
++                        serverip = getenv("serverip");
++                        if (serverip != NULL) {
++                                printf("Using serverip from env %s\n", serverip);
++                        } else {
++                                printf("\nServer ip not found, run dhcp or configure\n");
++                                return CMD_RET_FAILURE;
++                        }
++                }
++
++                if ((dumpdir = getenv("dumpdir")) != NULL) {
++                        printf("Using directory %s in TFTP server\n", dumpdir);
++                } else {
++                        dumpdir = "";
++                        printf("Env 'dumpdir' not set. Using / dir in TFTP server\n");
++                }
++
++                printf("\nProcessing dumps.....\n");
++                ret = scm_call(SCM_SVC_FUSE, QFPROM_IS_AUTHENTICATE_CMD,
++                                NULL, 0, &buf, sizeof(char));
++
++                char brd_mac_addr[32];
++                memset(brd_mac_addr, 0, sizeof(brd_mac_addr));
++                get_board_mac(brd_mac_addr);
++                char crash_file_name[32];
++                memset(crash_file_name, 0, sizeof(crash_file_name));
++
++                srand(get_timer(0));
++                int rand_num = 0;
++                rand_num = rand() % (MAX_NUM + 1 - MIN_NUM) + MIN_NUM;
++
++                snprintf(crash_file_name, sizeof(crash_file_name), "EBICS0%d_%s.bin", rand_num, brd_mac_addr + 6);
++
++                memset(runcmd, 0, sizeof(runcmd));
++                snprintf(runcmd, sizeof(runcmd), "setenv crash_fname %s", crash_file_name);
++
++                printf("crash_fname cmd %s\n", runcmd);
++                if (run_command(runcmd, 0) != CMD_RET_SUCCESS) {
++                        printf("setenv crash_fname fialed\n");
++                        return CMD_RET_FAILURE;
++                }
++                udelay(10000);
++                if (run_command("saveenv", 0) != CMD_RET_SUCCESS) {
++                        printf("%s: saveenv failed !!\n", __func__);
++                }
++                udelay(10000);
++
++                if (ret == 0 && buf == 1) {
++                        /*
++                         * Dumps CPU_CONTEXT_DUMP_BASE to gd->ram_size.
++                         */
++                        memaddr = CONFIG_CPU_CONTEXT_DUMP_BASE;
++                        gd->ram_size = CONFIG_CPU_CONTEXT_DUMP_SIZE;
++
++                        memset(runcmd, 0, sizeof(runcmd));
++                        snprintf(runcmd, sizeof(runcmd), "tftpput 0x%x 0x%x %s/%s",
++                                        memaddr, (unsigned int)gd->ram_size,
++                                        dumpdir, crash_file_name);
++                } else {
++                        /*
++                         * Dumps CONFIG_SYS_SDRAM_BASE to gd->ram_size.
++                         */
++                        memaddr = CONFIG_SYS_SDRAM_BASE;
++                        memset(runcmd, 0, sizeof(runcmd));
++                        snprintf(runcmd, sizeof(runcmd), "tftpput 0x%x 0x%x %s/%s",
++                                        memaddr, (unsigned int)gd->ram_size,
++                                        dumpdir, crash_file_name);
++                }
++
++                if (run_command(runcmd, 0) != CMD_RET_SUCCESS)
++                        return CMD_RET_FAILURE;
++                udelay(10000); /* give some delay for server */
++        }
++#endif
+ 	return CMD_RET_SUCCESS;
+ }
+ 
+diff --git a/include/configs/ipq40xx_cdp.h b/include/configs/ipq40xx_cdp.h
+index c1b0535..ceddb54 100644
+--- a/include/configs/ipq40xx_cdp.h
++++ b/include/configs/ipq40xx_cdp.h
+@@ -92,6 +92,7 @@
+ #define CONFIG_NR_DRAM_BANKS		1
+ #define CONFIG_OF_LIBFDT		1
+ #define CONFIG_OF_BOARD_SETUP		1
++#define CONFIG_RANDOM_MACADDR
+ 
+ #define CONFIG_IPQ40XX_I2C
+ #ifdef CONFIG_IPQ40XX_I2C
+diff --git a/net/net.c b/net/net.c
+index e8ff066..ff5f23e 100644
+--- a/net/net.c
++++ b/net/net.c
+@@ -513,6 +513,16 @@ restart:
+ 					NetBootFileXferSize);
+ 				sprintf(buf, "%lX", NetBootFileXferSize);
+ 				setenv("filesize", buf);
++                                if (run_command("setenv crash_status 1", 0) != CMD_RET_SUCCESS) {
++                                        printf("setenv crash_status 1 failed\n");
++                                        return CMD_RET_FAILURE;
++                                }
++                                if (run_command("saveenv", 0) != CMD_RET_SUCCESS) {
++                                        printf("%s: saveenv failed !!\n", __func__);
++                                }
++
++                                printf("setenv crash_status 1 success\n");
++
+ 
+ 				sprintf(buf, "%lX", (unsigned long)load_addr);
+ 				setenv("fileaddr", buf);
+diff --git a/net/tftp.c b/net/tftp.c
+index b2e08b4..dcde024 100644
+--- a/net/tftp.c
++++ b/net/tftp.c
+@@ -24,6 +24,7 @@
+ # define TIMEOUT_COUNT	10
+ #else
+ # define TIMEOUT_COUNT  (CONFIG_NET_RETRY_COUNT * 2)
++# define CRASH_UPLD_RETRY_COUNT  (TIMEOUT_COUNT / 20)
+ #endif
+ /* Number of "loading" hashes per line (for checking the image size) */
+ #define HASHES_PER_LINE	65
+@@ -40,6 +41,7 @@
+ 
+ static ulong TftpTimeoutMSecs = TIMEOUT;
+ static int TftpTimeoutCountMax = TIMEOUT_COUNT;
++static ulong got_ack = 0;
+ 
+ /*
+  * These globals govern the timeout behavior when attempting a connection to a
+@@ -469,6 +471,7 @@ TftpHandler(uchar *pkt, unsigned dest, IPaddr_t sip, unsigned src,
+ 	case TFTP_ACK:
+ #ifdef CONFIG_CMD_TFTPPUT
+ 		if (TftpWriting) {
++			got_ack++;
+ 			if (TftpFinalBlock) {
+ 				tftp_complete();
+ 			} else {
+@@ -638,6 +641,16 @@ TftpHandler(uchar *pkt, unsigned dest, IPaddr_t sip, unsigned src,
+ 	case TFTP_ERROR:
+ 		printf("\nTFTP error: '%s' (%d)\n",
+ 		       pkt + 2, ntohs(*(ushort *)pkt));
++                if (run_command("setenv crash_status 2", 0) != CMD_RET_SUCCESS) {
++                        printf("setenv crash_status 2 fialed\n");
++                } else {
++                        printf("setenv crash_status 2 success\n");
++                }
++                if (run_command("saveenv", 0) != CMD_RET_SUCCESS) {
++                        printf("%s: saveenv failed !!\n", __func__);
++                } else {
++                        printf("saveenv crash_status 2 success\n");
++                }
+ 
+ 		switch (ntohs(*(ushort *)pkt)) {
+ 		case TFTP_ERR_FILE_NOT_FOUND:
+@@ -670,6 +683,15 @@ TftpTimeout(void)
+ 	if (++TftpTimeoutCount > TftpTimeoutCountMax) {
+ 		restart("Retry count exceeded");
+ 	} else {
++		if (!got_ack && (TftpTimeoutCount > CRASH_UPLD_RETRY_COUNT)) {
++			TftpTimeoutCount = TIMEOUT_COUNT;
++			if (run_command("setenv crash_status 2", 0) != CMD_RET_SUCCESS) {
++				printf("setenv crash_status 2 fialed\n");
++			}
++			if (run_command("saveenv", 0) != CMD_RET_SUCCESS) {
++				printf("%s: saveenv failed !!\n", __func__);
++			}
++		}
+ 		puts("T ");
+ 		NetSetTimeout(TftpTimeoutMSecs, TftpTimeout);
+ 		if (TftpState != STATE_RECV_WRQ)

@@ -1,0 +1,224 @@
+diff --git a/net/Kconfig b/net/Kconfig
+index 9481540..939f49a 100644
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -194,6 +194,16 @@ config BRIDGE_NETFILTER
+ 
+ 	  If unsure, say N.
+ 
++config BRISO_ENABLED
++        bool "Bridge Isolation"
++        depends on BRIDGE
++        default n
++        ---help---
++          Enabling this option will allow to filter packets going from one
++          wireless interface to another wireless interface.
++
++          If unsure, say N.
++
+ config HTTP_REDIRECT_ENABLED
+   	bool "HTTP Redirect"
+    	depends on BRIDGE
+diff --git a/net/bridge/br.c b/net/bridge/br.c
+index 6aefe02..c2b7557 100644
+--- a/net/bridge/br.c
++++ b/net/bridge/br.c
+@@ -23,6 +23,10 @@
+ #include "br_private.h"
+ 
+ 
++#ifdef CONFIG_BRISO_ENABLED
++int briso_unicast_enabled = 0;
++int briso_multicast_enabled = 0;
++#endif
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+ int brhttp_redirect_enabled = 0;
+ unsigned char brhttp_redirect_add_mac[16];
+@@ -53,6 +57,49 @@ extern int br_hrdb_mark_cpauth_status(const unsigned char *mac, unsigned int sta
+ extern void br_hrdb_reset_mac_entry(void);
+ #endif
+ 
++#ifdef CONFIG_BRISO_ENABLED
++static
++int br_sysctl_call_briso_unicast_enabled(ctl_table * ctl, int write,
++                            void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++        int ret;
++
++        ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++        if (write) {
++//               if(*(int *)(ctl->data))
++//                      *(int *)(ctl->data) = 1;
++
++                if (briso_unicast_enabled)
++                        printk(KERN_NOTICE "br: unicast isolation enabled\n");
++                else
++                        printk(KERN_NOTICE "br: unicast isolation disabled\n");
++        }
++
++        return ret;
++}
++
++static
++int br_sysctl_call_briso_multicast_enabled(ctl_table * ctl, int write,
++                            void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++        int ret;
++
++        ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++        if (write) {
++//               if(*(int *)(ctl->data))
++//                      *(int *)(ctl->data) = 1;
++
++                if (briso_multicast_enabled)
++                        printk(KERN_NOTICE "br: multicast isolation enabled\n");
++                else
++                        printk(KERN_NOTICE "br: multicast isolation disabled\n");
++        }
++
++        return ret;
++}
++#endif
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+ static
+ int br_sysctl_call_brhttp_redirect_enabled(ctl_table * ctl, int write, 
+@@ -331,6 +378,22 @@ static struct ctl_table_header *br_sysctl_header;
+ 
+ static ctl_table br_table[] = {
+ 
++#ifdef CONFIG_BRISO_ENABLED
++    {
++                .procname       = "bridge-unicast-isolation-enabled",
++                .data           = &briso_unicast_enabled,
++                .maxlen         = sizeof(int),
++                .mode           = 0644,
++                .proc_handler   = &br_sysctl_call_briso_unicast_enabled,
++        },
++        {
++                .procname       = "bridge-multicast-isolation-enabled",
++                .data           = &briso_multicast_enabled,
++                .maxlen         = sizeof(int),
++                .mode           = 0644,
++                .proc_handler   = &br_sysctl_call_briso_multicast_enabled,
++        },
++#endif
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+     {
+        .procname   = "bridge-http-redirect-enabled",
+@@ -506,6 +569,17 @@ static int __init br_init(void)
+                err = -ENOMEM;
+                goto err_out4;
+        } else {
++#ifdef CONFIG_BRISO_ENABLED
++               if (briso_unicast_enabled)
++                       printk(KERN_NOTICE "br: Unicast isolation enabled\n");
++               else
++                       printk(KERN_NOTICE "br: Unicast isolation disabled\n");
++
++               if (briso_multicast_enabled)
++                       printk(KERN_NOTICE "br: Multicast isolation enabled\n");
++               else
++                       printk(KERN_NOTICE "br: Multicast isolation disabled\n");
++#endif
+ #ifdef CONFIG_HTTP_REDIRECT_ENABLED
+                if (brhttp_redirect_enabled)
+                        printk(KERN_NOTICE "br: HTTP redirect enabled\n");
+diff --git a/net/bridge/br_forward.c b/net/bridge/br_forward.c
+index 8c61089..62e33ac 100644
+--- a/net/bridge/br_forward.c
++++ b/net/bridge/br_forward.c
+@@ -23,6 +23,74 @@
+ #include "br_private.h"
+ #include "br_hook.h"
+ 
++#if defined(CONFIG_BRISO_ENABLED)
++#define IS_WIFI_VAP(dev) (dev->priv_flags & IFF_WIFI_VAP)
++#define VAP_OF_SAME_RADIO(indev, outdev)\
++                 (memcmp(indev->name, outdev->name, 5) == 0)
++#define IS_2GHZ_VAP(dev) (memcmp("wifi0",dev->name, 5) == 0)
++#define IS_5GHZ_VAP(dev) (memcmp("wifi1",dev->name, 5) == 0)
++#define ALL_RADIO 1
++#define ON_2GHZ 4
++#define ON_5GHZ 5
++#endif
++#ifdef CONFIG_BRISO_ENABLED
++extern int briso_unicast_enabled;
++extern int briso_multicast_enabled;
++#endif
++
++#ifdef CONFIG_BRISO_ENABLED
++/* Block the forward if it is a unicast pkt from one VAP to another */
++static inline int briso_block_unicast(struct net_device *indev,
++                                        struct net_device *outdev,
++                                        struct sk_buff *skb)
++{
++        const unsigned char *dest = eth_hdr(skb)->h_dest;
++        int is_multi = is_multicast_ether_addr(dest);
++
++        if((briso_unicast_enabled == ALL_RADIO) && !is_multi &&
++           IS_WIFI_VAP(indev) && IS_WIFI_VAP(outdev) &&
++           VAP_OF_SAME_RADIO(indev, outdev))
++                    return 1;
++        else if((briso_unicast_enabled == ON_2GHZ) && !is_multi &&
++                IS_WIFI_VAP(indev) && IS_WIFI_VAP(outdev) &&
++                ((IS_2GHZ_VAP(indev) && IS_2GHZ_VAP(outdev)) /*||
++                !VAP_OF_SAME_RADIO(indev, outdev)*/))
++                    return 1;
++        else if((briso_unicast_enabled == ON_5GHZ) && !is_multi &&
++                IS_WIFI_VAP(indev) && IS_WIFI_VAP(outdev) &&
++                (IS_5GHZ_VAP(indev) && IS_5GHZ_VAP(outdev)))
++                    return 1;
++        else
++                    return 0;
++}
++
++/* Block the forward if it is a multicast/broadcast pkt from one VAP to another */
++static inline int briso_block_multicast(struct net_device *indev,
++                                        struct net_device *outdev,
++                                        struct sk_buff *skb)
++{
++        const unsigned char *dest = eth_hdr(skb)->h_dest;
++        int is_multi = is_multicast_ether_addr(dest);
++
++        if((briso_unicast_enabled == ALL_RADIO) && is_multi &&
++           IS_WIFI_VAP(indev) && IS_WIFI_VAP(outdev) &&
++           VAP_OF_SAME_RADIO(indev, outdev))
++                    return 1;
++        else if((briso_unicast_enabled == ON_2GHZ) && is_multi &&
++               IS_WIFI_VAP(indev) && IS_WIFI_VAP(outdev) &&
++               ((IS_2GHZ_VAP(indev) && IS_2GHZ_VAP(indev))/* ||
++               !VAP_OF_SAME_RADIO(indev, outdev)*/))
++                    return 1;
++        else if((briso_unicast_enabled == ON_5GHZ) && is_multi &&
++               IS_WIFI_VAP(indev) && IS_WIFI_VAP(outdev) &&
++               ((IS_5GHZ_VAP(indev) && IS_5GHZ_VAP(indev))/* ||
++               !VAP_OF_SAME_RADIO(indev, outdev)*/))
++                    return 1;
++        else
++                    return 0;
++}
++#endif
++
+ static int deliver_clone(const struct net_bridge_port *prev,
+ 			 struct sk_buff *skb,
+ 			 void (*__packet_hook)(const struct net_bridge_port *p,
+@@ -121,8 +189,17 @@ static void __br_forward(const struct net_bridge_port *to, struct sk_buff *skb)
+ 	skb->dev = to->dev;
+ 	skb_forward_csum(skb);
+ 
++    if (1
++#ifdef CONFIG_BRISO_ENABLED
++        && !briso_block_unicast(indev, to->dev, skb) &&
++                !briso_block_multicast(indev, to->dev, skb)
++#endif
++    ) {
+ 	BR_HOOK(NFPROTO_BRIDGE, NF_BR_FORWARD, skb, indev, skb->dev,
+ 		br_forward_finish);
++        return;
++    }
++    kfree_skb(skb);
+ }
+ 
+ /* called with rcu_read_lock */

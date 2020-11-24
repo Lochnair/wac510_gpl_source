@@ -1,0 +1,96 @@
+diff --git a/arch/arm/cpu/armv7/qca/cmd_bootqca.c b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+index 17dc712..a542405 100644
+--- a/arch/arm/cpu/armv7/qca/cmd_bootqca.c
++++ b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+@@ -39,6 +39,8 @@ extern board_ipq40xx_params_t *gboard_param;
+ #ifdef CONFIG_QCA_MMC
+ static qca_mmc *host = &mmc_host;
+ #endif
++static char *wdt_args = NULL;
++static char *failsafe_args = NULL;
+ 
+ typedef struct {
+ 	unsigned int image_type;
+@@ -156,7 +158,15 @@ static int set_fs_bootargs(int *fs_on_nand)
+ 		return -EINVAL;
+ 	}
+ 
+-	return run_command("setenv bootargs ${bootargs} ${fsbootargs} ${mfgbootargs} rootwait", 0);
++	if (getenv("failsafeargs") == NULL && failsafe_args != NULL) {
++		setenv("failsafeargs", failsafe_args);
++	}
++
++	if (getenv("wdtargs") == NULL && wdt_args != NULL) {
++		setenv("wdtargs", wdt_args);
++	}
++
++	return run_command("setenv bootargs ${bootargs} ${fsbootargs} ${mfgbootargs} ${failsafeargs} ${wdtargs} rootwait", 0);
+ }
+ 
+ int config_select(unsigned int addr, const char **config, char *rcmd, int rcmd_size)
+@@ -381,7 +391,8 @@ static int firmware_upgrade(void)
+ 	printf("Boot count=%s\n", boot_cnt_str);
+ 	boot_cnt = boot_cnt_str ? simple_strtoul(boot_cnt_str, NULL, 10) : 0;
+ 	if (boot_cnt > BOOT_MAX) {
+-		printf("Switching secondary partition\n");
++		printf("Switching boot partition\n");
++		failsafe_args = "failsafe=1";
+ 		strcpy(swap_addr, getenv("primary"));
+ 		setenv("primary", getenv("secondary"));
+ 		setenv("secondary", swap_addr);
+@@ -399,8 +410,8 @@ static int do_boot_unsignedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const
+ {
+ #ifdef CONFIG_QCA_APPSBL_DLOAD
+ 	uint64_t etime;
+-	volatile u32 val;
+ #endif
++	volatile u32 val;
+ 	int ret;
+ 	char runcmd[256];
+ #ifdef CONFIG_QCA_MMC
+@@ -410,7 +421,6 @@ static int do_boot_unsignedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const
+ 
+ 	if (argc == 2 && strncmp(argv[1], "debug", 5) == 0)
+ 		debug = 1;
+-#ifdef CONFIG_QCA_APPSBL_DLOAD
+ 	ret = scm_call(SCM_SVC_BOOT, SCM_SVC_RD, NULL,
+ 			0, (void *)&val, sizeof(val));
+ 	/* check if we are in download mode */
+@@ -422,6 +432,9 @@ static int do_boot_unsignedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const
+ 		if (ret)
+ 			printf ("Error in reseting the Magic cookie\n");
+ 
++		wdt_args = "wdt_reset=1";
++
++#ifdef CONFIG_QCA_APPSBL_DLOAD
+ 		etime = get_timer_masked() + (10 * CONFIG_SYS_HZ);
+ 
+ 		printf("\nCrashdump magic found."
+@@ -437,8 +450,8 @@ static int do_boot_unsignedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const
+ 		 * when crashmagic is found
+ 		 */
+ 		run_command("reset", 0);
+-	}
+ #endif
++	}
+ 
+ 	if ((ret = set_fs_bootargs(&ipq_fs_on_nand)))
+ 		return ret;
+@@ -580,11 +593,15 @@ static int do_bootipq(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
+ 				NULL, 0, &buf, sizeof(char));
+ 
+ 	if (ret == 0 && buf == 1) {
+-		return do_boot_signedimg(cmdtp, flag, argc, argv);
++		do_boot_signedimg(cmdtp, flag, argc, argv);
+ 	} else if (ret == 0 || ret == -EOPNOTSUPP) {
+-		return do_boot_unsignedimg(cmdtp, flag, argc, argv);
++		do_boot_unsignedimg(cmdtp, flag, argc, argv);
+ 	}
+ 
++	/* This point is reached if not able to boot kernel */
++	printf("\nbootipq failed!!\n");
++	run_command("reset", 0);
++
+ 	return CMD_RET_FAILURE;
+ }
+ 

@@ -1,0 +1,78 @@
+--- dnsmasq-2.75/src/dhcp.c	2015-07-31 01:29:07.000000000 +0530
++++ dnsmasq-2.75_changed/src/dhcp.c	2016-08-26 16:16:32.800843374 +0530
+@@ -17,6 +17,7 @@
+ #include "dnsmasq.h"
+ 
+ #ifdef HAVE_DHCP
++#define IP_RECVIFINDEX 51
+ 
+ struct iface_param {
+   struct dhcp_context *current;
+@@ -61,6 +62,7 @@
+ #endif
+ #if defined(HAVE_LINUX_NETWORK)
+       setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &oneopt, sizeof(oneopt)) == -1 ||
++      setsockopt(fd, IPPROTO_IP, IP_RECVIFINDEX, &oneopt, sizeof(oneopt)) == -1 ||
+ #else
+       setsockopt(fd, IPPROTO_IP, IP_RECVIF, &oneopt, sizeof(oneopt)) == -1 ||
+ #endif
+@@ -139,13 +141,13 @@
+   struct dhcp_relay *relay;
+   int is_relay_reply = 0;
+   struct iname *tmp;
+-  struct ifreq ifr;
++  struct ifreq ifr, orig_ifr;
+   struct msghdr msg;
+   struct sockaddr_in dest;
+   struct cmsghdr *cmptr;
+   struct iovec iov;
+   ssize_t sz; 
+-  int iface_index = 0, unicast_dest = 0, is_inform = 0;
++  int iface_index = 0, unicast_dest = 0, is_inform = 0, orig_iface_index = 0;
+   struct in_addr iface_addr;
+   struct iface_param parm;
+ #ifdef HAVE_LINUX_NETWORK
+@@ -155,7 +157,7 @@
+   union {
+     struct cmsghdr align; /* this ensures alignment */
+ #if defined(HAVE_LINUX_NETWORK)
+-    char control[CMSG_SPACE(sizeof(struct in_pktinfo))];
++    char control[CMSG_SPACE(sizeof(struct in_pktinfo)) + CMSG_SPACE(sizeof(int))];
+ #elif defined(HAVE_SOLARIS_NETWORK)
+     char control[CMSG_SPACE(sizeof(unsigned int))];
+ #elif defined(HAVE_BSD_NETWORK) 
+@@ -177,7 +179,7 @@
+     
+   #if defined (HAVE_LINUX_NETWORK)
+   if (msg.msg_controllen >= sizeof(struct cmsghdr))
+-    for (cmptr = CMSG_FIRSTHDR(&msg); cmptr; cmptr = CMSG_NXTHDR(&msg, cmptr))
++    for (cmptr = CMSG_FIRSTHDR(&msg); cmptr; cmptr = CMSG_NXTHDR(&msg, cmptr)) {
+       if (cmptr->cmsg_level == IPPROTO_IP && cmptr->cmsg_type == IP_PKTINFO)
+ 	{
+ 	  union {
+@@ -189,6 +191,9 @@
+ 	  if (p.p->ipi_addr.s_addr != INADDR_BROADCAST)
+ 	    unicast_dest = 1;
+ 	}
++      if (cmptr->cmsg_level == IPPROTO_IP && cmptr->cmsg_type == IP_RECVIFINDEX)
++	orig_iface_index = *((int*)CMSG_DATA(cmptr));
++    }
+ 
+ #elif defined(HAVE_BSD_NETWORK) 
+   if (msg.msg_controllen >= sizeof(struct cmsghdr))
+@@ -282,9 +287,14 @@
+ 	  return;
+ 	}
+       
+-      for (tmp = daemon->dhcp_except; tmp; tmp = tmp->next)
++      if ( orig_iface_index && !indextoname(daemon->dhcpfd, orig_iface_index, orig_ifr.ifr_name))
++        return;
++      for (tmp = daemon->dhcp_except; tmp; tmp = tmp->next) {
+ 	if (tmp->name && wildcard_match(tmp->name, ifr.ifr_name))
+ 	  return;
++	if (orig_iface_index && tmp->name && wildcard_match(tmp->name, orig_ifr.ifr_name))
++	  return;
++      }
+       
+       /* unlinked contexts/relays are marked by context->current == context */
+       for (context = daemon->dhcp; context; context = context->next)

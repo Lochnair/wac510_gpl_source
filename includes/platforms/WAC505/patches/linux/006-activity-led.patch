@@ -1,0 +1,12 @@
+diff --git a/include/linux/netdevice.h b/include/linux/netdevice.h
+index 3e7ee15..6b4eccc 100644
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -1525,6 +1525,7 @@ struct net_device {
+ 	int group;
+ 
+ 	struct pm_qos_request	pm_qos_req;
++	struct net_blink_data   *blink;
+ };
+ #define to_net_dev(d) container_of(d, struct net_device, dev)
+ 

@@ -1,0 +1,40 @@
+diff --git a/include/uapi/linux/if.h b/include/uapi/linux/if.h
+index 2d56772..f02fc6c 100644
+--- a/include/uapi/linux/if.h
++++ b/include/uapi/linux/if.h
+@@ -87,6 +87,7 @@
+ #define IFF_NO_IP_ALIGN	0x200000	/* do not ip-align allocated rx pkts */
+ #define IFF_WIFI_VAP 0x400000
+ #define ISOLATE_VAP 0x10000000      /*Isolate the Wifi VAP from other VAPs */
++#define WDS_VAP_DEV 0x20000000      /* VAP is a WDS VAP  */
+ 
+ #if CONFIG_HTTP_REDIRECT_ENABLED
+ #define IFF_CAPTIVE_FLAG 0x800000
+diff --git a/net/bridge/br_forward.c b/net/bridge/br_forward.c
+index bb5a4a9..dd0dfe7 100644
+--- a/net/bridge/br_forward.c
++++ b/net/bridge/br_forward.c
+@@ -25,6 +25,7 @@
+ 
+ #if defined(CONFIG_BRISO_ENABLED)
+ #define IS_ISOLATION_ENABLED(dev) (dev->priv_flags & ISOLATE_VAP)
++#define IS_WDS_VAP(dev) (dev->priv_flags & WDS_VAP_DEV)
+ #define IS_WIFI_VAP(dev) (dev->priv_flags & IFF_WIFI_VAP)
+ #define VAP_OF_SAME_RADIO(indev, outdev)\
+                  (memcmp(indev->name, outdev->name, 5) == 0)
+@@ -50,6 +51,7 @@ static inline int briso_block_unicast(struct net_device *indev,
+ 
+         if((briso_unicast_enabled == ALL_RADIO) && !is_multi &&
+            IS_WIFI_VAP(indev) && IS_WIFI_VAP(outdev) &&
++           (!(IS_WDS_VAP(indev) || IS_WDS_VAP(outdev))) &&
+ 		   (IS_ISOLATION_ENABLED(indev) || IS_ISOLATION_ENABLED(outdev)))
+                     return 1;
+         else if((briso_unicast_enabled == ON_2GHZ) && !is_multi &&
+@@ -75,6 +77,7 @@ static inline int briso_block_multicast(struct net_device *indev,
+ 
+         if((briso_multicast_enabled == ALL_RADIO) && is_multi &&
+            IS_WIFI_VAP(indev) && IS_WIFI_VAP(outdev) &&
++           (!(IS_WDS_VAP(indev) || IS_WDS_VAP(outdev))) &&
+            (IS_ISOLATION_ENABLED(indev) || IS_ISOLATION_ENABLED(outdev)))
+                     return 1;
+         else if((briso_unicast_enabled == ON_2GHZ) && is_multi &&

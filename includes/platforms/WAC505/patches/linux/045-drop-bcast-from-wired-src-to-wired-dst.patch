@@ -1,0 +1,36 @@
+diff --git a/include/uapi/linux/if.h b/include/uapi/linux/if.h
+index f02fc6c..49de012 100644
+--- a/include/uapi/linux/if.h
++++ b/include/uapi/linux/if.h
+@@ -88,6 +88,8 @@
+ #define IFF_WIFI_VAP 0x400000
+ #define ISOLATE_VAP 0x10000000      /*Isolate the Wifi VAP from other VAPs */
+ #define WDS_VAP_DEV 0x20000000      /* VAP is a WDS VAP  */
++#define IFF_WIRED_WAN 0x40000000    /* Ethernet Wired WAN */
++#define IFF_WIRED_LAN 0x80000000    /* Ethernet wired LAN */
+ 
+ #if CONFIG_HTTP_REDIRECT_ENABLED
+ #define IFF_CAPTIVE_FLAG 0x800000
+diff --git a/net/bridge/br_forward.c b/net/bridge/br_forward.c
+index c7fee99..7d652f5 100644
+--- a/net/bridge/br_forward.c
++++ b/net/bridge/br_forward.c
+@@ -23,6 +23,7 @@
+ #include "br_private.h"
+ #include "br_hook.h"
+ 
++#define IS_WIRED_LAN(dev) (dev->priv_flags & IFF_WIRED_LAN)
+ #if defined(CONFIG_BRISO_ENABLED)
+ #define IS_ISOLATION_ENABLED(dev) (dev->priv_flags & ISOLATE_VAP)
+ #define IS_WDS_VAP(dev) (dev->priv_flags & WDS_VAP_DEV)
+@@ -284,6 +285,10 @@ static void br_flood(struct net_bridge *br, struct sk_buff *skb,
+ 	prev = NULL;
+ 
+ 	list_for_each_entry_rcu(p, &br->port_list, list) {
++		if (IS_WIRED_LAN(skb->dev) && IS_WIRED_LAN(p->dev)) {
++			continue;
++		}
++
+ 		if (forward && (p->flags & BR_ISOLATE_MODE))
+ 			continue;
+ 		/* Do not flood unicast traffic to ports that turn it off */

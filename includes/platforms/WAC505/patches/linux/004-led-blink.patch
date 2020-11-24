@@ -1,0 +1,188 @@
+diff --git a/drivers/leds/Kconfig b/drivers/leds/Kconfig
+index ffd755d..d00cf2c 100644
+--- a/drivers/leds/Kconfig
++++ b/drivers/leds/Kconfig
+@@ -504,6 +504,14 @@ config LEDS_IPQ40XX
+ 	  Supports 2 and 3 wire mode.
+ 	  Say Y to enable LEDs on IPQ40XX.
+ 
++config LEDS_W710_BLINK
++   tristate "LED Blinking support for Netgear's WAC510 AP"
++   default n
++   depends on LEDS_CLASS
++   help
++	  This option enables LED blinking support on WAC510.
++	  Say Y to enable LED blinking on WAC510 AP.
++
+ comment "LED Triggers"
+ source "drivers/leds/trigger/Kconfig"
+ 
+diff --git a/drivers/leds/Makefile b/drivers/leds/Makefile
+index 32bdbf4..60c5267 100644
+--- a/drivers/leds/Makefile
++++ b/drivers/leds/Makefile
+@@ -56,6 +56,7 @@ obj-$(CONFIG_LEDS_MAX8997)		+= leds-max8997.o
+ obj-$(CONFIG_LEDS_LM355x)		+= leds-lm355x.o
+ obj-$(CONFIG_LEDS_BLINKM)		+= leds-blinkm.o
+ obj-$(CONFIG_LEDS_IPQ40XX)		+= leds-ipq40xx.o
++obj-$(CONFIG_LEDS_W710_BLINK)   += net-blink.o
+ 
+ # LED SPI Drivers
+ obj-$(CONFIG_LEDS_DAC124S085)		+= leds-dac124s085.o
+diff --git a/drivers/leds/net-blink.c b/drivers/leds/net-blink.c
+new file mode 100644
+index 0000000..aa4ccbb
+--- /dev/null
++++ b/drivers/leds/net-blink.c
+@@ -0,0 +1,113 @@
++/*
++* net-blink.c
++* Created on July 04, 2016
++*
++* Copyright (c) 2016, NETGEAR, Inc.
++* 350 East Plumeria, San Jose California, 95134, U.S.A.
++* All rights reserved.
++*
++*
++* This software is the confidential and proprietary information of
++* NETGEAR, Inc. ("Confidential Information"). You shall not
++* disclose such Confidential Information and shall use it only in
++* accordance with the terms of the license agreement you entered into
++* with NETGEAR.
++*
++* @Author : Dinesh Kumar <dinesh.kumar@netgear.com>
++*
++*/
++
++#include <linux/module.h>
++#include <linux/jiffies.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/list.h>
++#include <linux/spinlock.h>
++#include <linux/device.h>
++#include <linux/timer.h>
++#include <linux/ctype.h>
++#include <linux/leds.h>
++#include <linux/slab.h>
++#include <linux/gpio.h>
++#include <linux/net-blink.h>
++#include "leds.h"
++
++#define BLINK_ON_TIME  100
++#define BLINK_OFF_TIME 100
++
++typedef enum _BLINK_STATE {
++    BLINK_DONE = 0,
++    BLINK_LED_ON = 1,
++    BLINK_LED_OFF = 2
++} BLINK_STATE;
++
++static int g_blink_set;
++
++static void blink_timer_function (unsigned long data)
++{
++	struct net_blink_data *blink = ( struct net_blink_data*) data;
++
++_start:
++	switch(blink->cur_state) {
++		case BLINK_DONE:
++			blink->cur_state = BLINK_LED_ON;
++			gpio_set_value(blink->gpio, W710_LED_ON);
++			mod_timer(&blink->timer, jiffies + msecs_to_jiffies(BLINK_ON_TIME));
++			break;
++		case BLINK_LED_ON:
++			blink->cur_state = BLINK_LED_OFF;
++			gpio_set_value(blink->gpio, W710_LED_OFF);
++			mod_timer(&blink->timer, jiffies + msecs_to_jiffies(BLINK_OFF_TIME));
++			break;
++		case BLINK_LED_OFF:
++			blink->cur_state = BLINK_DONE;
++			if (g_blink_set) {
++				g_blink_set = 0;
++				goto _start;
++			}
++			break;
++		default:
++			break;
++	}
++}
++
++void net_blink_set (struct net_blink_data *blink)
++{
++	if (blink->cur_state == BLINK_DONE) {
++		blink_timer_function((unsigned long)blink);
++	} else if (!g_blink_set) {
++		g_blink_set = 1;
++	}
++	return;
++}
++EXPORT_SYMBOL(net_blink_set);
++
++struct net_blink_data*
++net_blink_init (int gpio, int brightness)
++{
++    struct net_blink_data *blink;
++
++	blink = kzalloc(sizeof(struct net_blink_data), GFP_KERNEL);
++	if (blink == NULL) {
++		return NULL;
++	}
++
++    blink->gpio = gpio;
++	init_timer(&blink->timer);
++	blink->timer.function = blink_timer_function;
++	blink->timer.data = (unsigned long) (blink);
++
++	gpio_set_value(blink->gpio, brightness);
++	return blink;
++}
++EXPORT_SYMBOL(net_blink_init);
++
++int net_blink_exit (struct net_blink_data *blink)
++{
++	gpio_set_value(blink->gpio, W710_LED_OFF);
++	del_timer_sync(&blink->timer);
++	kfree(blink);
++
++	return 0;
++}
++EXPORT_SYMBOL(net_blink_exit);
+diff --git a/include/linux/net-blink.h b/include/linux/net-blink.h
+new file mode 100644
+index 0000000..53dd982
+--- /dev/null
++++ b/include/linux/net-blink.h
+@@ -0,0 +1,32 @@
++/*
++* net-blink.h
++* Created on July 04, 2016
++*
++* Copyright (c) 2016, NETGEAR, Inc.
++* 350 East Plumeria, San Jose California, 95134, U.S.A.
++* All rights reserved.
++*
++*
++* This software is the confidential and proprietary information of
++* NETGEAR, Inc. ("Confidential Information"). You shall not
++* disclose such Confidential Information and shall use it only in
++* accordance with the terms of the license agreement you entered into
++* with NETGEAR.
++*
++* @Author : Dinesh Kumar <dinesh.kumar@netgear.com>
++* 
++*/
++
++#define W710_LED_ON         0
++#define W710_LED_OFF        1
++
++struct net_blink_data {
++        int gpio;
++        struct timer_list timer;
++        int cur_state;
++};
++
++struct net_blink_data*
++net_blink_init (int gpio, int brightness);
++void net_blink_set (struct net_blink_data *blink);
++int net_blink_exit (struct net_blink_data *blink);

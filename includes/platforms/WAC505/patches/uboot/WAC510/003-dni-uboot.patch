@@ -1,0 +1,217 @@
+diff --git a/common/Makefile b/common/Makefile
+index 483eb4d..5f45036 100644
+--- a/common/Makefile
++++ b/common/Makefile
+@@ -41,6 +41,7 @@ COBJS-$(CONFIG_CMD_BOOTM) += cmd_bootm.o
+ COBJS-y += cmd_help.o
+ COBJS-y += cmd_nvedit.o
+ COBJS-y += cmd_version.o
++COBJS-y += cmd_dni.o
+ 
+ # environment
+ COBJS-y += env_common.o
+diff --git a/common/cmd_dni.c b/common/cmd_dni.c
+new file mode 100644
+index 0000000..ba03db7
+--- /dev/null
++++ b/common/cmd_dni.c
+@@ -0,0 +1,177 @@
++#include <common.h>
++#include <command.h>
++#include <miiphy.h>
++#include <errno.h>
++
++#define MANUFACTURING_DATA_OFFSET	0x1e0000
++#define CONFIG_SYS_FLASH_SECTOR_SIZE	0x10000
++#define CONFIG_SYS_LOAD_ADD 		0x84000000
++#define SERIAL_NUMBER_LENGTH       	13
++#define BOARD_PRODUCT_ID_LENGTH		6
++#define HW_VER_LENGTH	  		3
++#define SUB_HW_VER_LENGTH		3
++#define REGION_INFO_LENGTH		1
++#define BOARD_TYPE_LENGTH		6
++
++#define SERIAL_NUMBER_OFFSET        0xc
++#define BOARD_PRODUCT_ID_OFFSET     (SERIAL_NUMBER_OFFSET + SERIAL_NUMBER_LENGTH)
++#define HW_VER_OFFSET		    (BOARD_PRODUCT_ID_OFFSET+BOARD_PRODUCT_ID_LENGTH)
++#define SUB_HW_VER_OFFSET	    (HW_VER_OFFSET + HW_VER_LENGTH)
++#define REGION_INFO_OFFSET	    (SUB_HW_VER_OFFSET + SUB_HW_VER_LENGTH)
++#define BOARD_TYPE_OFFSET	    (REGION_INFO_OFFSET + REGION_INFO_LENGTH)
++
++
++int do_board_parameters_set(cmd_tbl_t *cmdtp, int flag, int argc,
++                             char * const argv[])
++ {
++	char runcmd[256];
++	char src[50] ;
++	int offset=0, i=0, j=0, k=0, val=0, sum=0, length, mac_num=2, m=0;
++	int parameters_len[6] ={SERIAL_NUMBER_LENGTH ,BOARD_PRODUCT_ID_LENGTH , HW_VER_LENGTH ,SUB_HW_VER_LENGTH ,REGION_INFO_LENGTH ,BOARD_TYPE_LENGTH};
++	if (argc != 9 ) {
++		printf("%s\n",cmdtp->usage);
++		return 1;
++	}
++	u8 mac[2][6] = {{255, 255, 255, 255, 255, 255},
++                    {255, 255, 255, 255, 255, 255},
++                   };
++
++	char sectorBuff[6 * 2 +
++         SERIAL_NUMBER_LENGTH + BOARD_PRODUCT_ID_LENGTH
++         + HW_VER_LENGTH + SUB_HW_VER_LENGTH + REGION_INFO_LENGTH 
++         + BOARD_TYPE_LENGTH];
++
++	memset(sectorBuff,0,sizeof(sectorBuff));
++
++	for (i=1 ;i<=6 ;i++){
++		length = strlen(argv[i]);   /*check the SN's length*/
++		if (length > parameters_len[i-1]){
++		printf ("the %dth len is wrong,it's lenth is %d\n ", i,parameters_len[i-1]);
++		return 1;
++		}
++		memcpy(sectorBuff + 12 + offset, argv[i], length);
++		offset += length;
++	}
++
++	/* check MAC address */
++	for (k = 7; k < 9; ++k)
++	{
++		sum = 0 , val = 0;
++		i = 0; j = 0;
++		while (argv[k][i])
++		{
++			if (':' == argv[k][i])
++			{
++				mac[m][j++] = val;
++				i++;
++				sum += val;
++				val = 0;
++				continue;
++			}
++			if ((argv[k][i] >= '0') && (argv[k][i] <= '9'))
++				val = val*16 + (argv[k][i] - '0');
++			else if ((argv[k][i] >='a') && (argv[k][i] <= 'f'))
++				val = val*16 + (argv[k][i] - 'a') + 10;
++			else if ((argv[k][i] >= 'A') && (argv[k][i] <= 'F'))
++				val = val*16 + (argv[k][i] - 'A') + 10;
++			else
++			{
++				printf("The %d MAC address is incorrect\n",k);
++				printf("The MAC address can not be all 0x00 or all 0xFF\n");
++				return 1;
++			}
++			i++;
++		}
++		mac[m][j] = val;
++		sum += val;
++		m++;
++		if (j != 5  || 0 == sum || 1530 == sum)
++		{
++			printf("The %d MAC address is incorrect\n",k);
++			printf("The MAC address can not be all 0x00 or all 0xFF\n");
++			return 1;
++		}
++	}
++
++	memcpy(sectorBuff, mac,12);
++
++ 	snprintf(runcmd, sizeof(runcmd), "sf probe && sf erase 0x%lx +0x%lx && sf write 0x%lx 0x%lx 0x%lx",(uint)MANUFACTURING_DATA_OFFSET
++,CONFIG_SYS_FLASH_SECTOR_SIZE ,sectorBuff,(uint)MANUFACTURING_DATA_OFFSET, CONFIG_SYS_FLASH_SECTOR_SIZE);
++
++        if (run_command(runcmd, 0) != CMD_RET_SUCCESS)
++		printf("run_command failed !!\n");
++	return 0;
++ } 
++
++U_BOOT_CMD(
++          board_parameters_set, 9, 0, do_board_parameters_set,
++	"set <SN> <PRID> <HWID> <SUBHWID> <REGION_INFO> <BOARD_TYPE> <lan address> <wlan address>", 
++	"example : board_parameters_set 4DA159E30007E WAC510 3.1 2.0 1 WAC510 6a:03:7F:EF:77:87 5b:03:33:44:66:FE"
++  );
++
++int do_board_parameters_show(cmd_tbl_t * cmdtp, int flag, int argc,
++                             char * const argv[])
++{
++	unsigned char sectorBuff[0x10000];
++	int i, end ;
++	char runcmd[255] ;
++
++	snprintf(runcmd, sizeof(runcmd), "sf probe && sf read 0x%lx 0x%lx 0x%lx", sectorBuff,(uint)MANUFACTURING_DATA_OFFSET, CONFIG_SYS_FLASH_SECTOR_SIZE);
++
++        if (run_command(runcmd, 0) != CMD_RET_SUCCESS){
++            printf("run_command failed !!\n");
++	    return 0; 
++	}
++	
++	printf("\nSerial Number: ");
++	end = 12 + SERIAL_NUMBER_LENGTH;
++	for (i = SERIAL_NUMBER_OFFSET ; i < end; ++i)
++		printf("%c",sectorBuff[i]);
++
++	printf("\nproductid: ");
++	end = BOARD_PRODUCT_ID_OFFSET + BOARD_PRODUCT_ID_LENGTH;
++	for (i = BOARD_PRODUCT_ID_OFFSET ; i < end; ++i)
++		printf("%c",sectorBuff[i]);
++
++	printf("\nhwversion : ");
++	end = HW_VER_OFFSET + HW_VER_LENGTH ;
++	for (i = HW_VER_OFFSET; i < end; ++i)
++		printf("%c",sectorBuff[i]);
++	printf("\n");
++
++	printf("\nsubhwversion : ");
++	end = SUB_HW_VER_OFFSET + SUB_HW_VER_LENGTH ;
++	for (i = SUB_HW_VER_OFFSET; i < end; ++i)
++		printf("%c",sectorBuff[i]);
++	printf("\n");
++
++	printf("\nregion-info : ");
++	end = REGION_INFO_OFFSET + REGION_INFO_LENGTH ;
++	for (i = REGION_INFO_OFFSET; i < end; ++i)
++		printf("%c",sectorBuff[i]);
++	printf("\n");
++
++	printf("\nboard_type : ");
++	end = BOARD_TYPE_OFFSET + BOARD_TYPE_LENGTH ;
++	for (i = BOARD_TYPE_OFFSET; i < end; ++i)
++		printf("%c",sectorBuff[i]);
++	printf("\n");
++
++	i = 0;
++	printf("lan mac: %02x:%02x:%02x:%02x:%02x:%02x\n",
++			sectorBuff[i], sectorBuff[i+1], sectorBuff[i+2],
++			sectorBuff[i+3], sectorBuff[i+4], sectorBuff[i+5]);
++
++	i = 6;
++	printf("wan mac: %02x:%02x:%02x:%02x:%02x:%02x\n",
++			sectorBuff[i], sectorBuff[i+1], sectorBuff[i+2],
++			sectorBuff[i+3], sectorBuff[i+4], sectorBuff[i+5]);
++
++	return 0;
++}
++
++U_BOOT_CMD(
++	board_parameters_show, 1, 0, do_board_parameters_show,
++	"show <SN> <PRID> <HWID> <SUBHWID> <REGION_INFO> <BOARD_TYPE> <lan address> <wlan address>",
++	"show <SN> <PRID> <HWID> <SUBHWID> <REGION_INFO> <BOARD_TYPE> <lan address> <wlan address>\n"
++);
+diff --git a/include/configs/ipq40xx_cdp.h b/include/configs/ipq40xx_cdp.h
+index d88769e..1d86b43 100644
+--- a/include/configs/ipq40xx_cdp.h
++++ b/include/configs/ipq40xx_cdp.h
+@@ -306,4 +306,17 @@ typedef struct {
+ #define CONFIG_BOOTDELAY	2
+ #define CONFIG_IPQ_FDT_HIGH	0x87000000
+ 
++#define CONFIG_EXTRA_ENV_SETTINGS										\
++	"delenv=sf probe && sf erase 0x000e0000 +0x10000\0"					\
++	"show_cal_at_end_of_nor=sf probe && "						\
++		"sf read 0x84000000 0x1f0000 0x10000 && "				\
++		"md.b 0x84001000 0x40\0"			\
++	"install_cal_to_end_of_nor=sf probe && "						\
++		"sf read 0x84000000 0x170000 0x10000 && "				\
++		"sf erase 0x1f0000 +0x10000 && "				\
++		"sf write 0x84000000 0x1f0000 0x10000\0"			\
++	""
++
++#define CONFIG_SYS_LONGHELP				/* undef to save memory	    */
++
+ #endif /* _IPQCDP_H */

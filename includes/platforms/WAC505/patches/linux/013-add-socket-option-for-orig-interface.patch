@@ -1,0 +1,126 @@
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+index 3bddc00..0b7b95a 100644
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -481,6 +481,7 @@ struct sk_buff {
+ #endif
+ 
+ 	int			skb_iif;
++	int			orig_skb_iif;
+ 
+ 	__u32			rxhash;
+ #ifdef CONFIG_NF_FLOW_COOKIE
+diff --git a/include/uapi/linux/in.h b/include/uapi/linux/in.h
+index 393c5de..71c41c8 100644
+--- a/include/uapi/linux/in.h
++++ b/include/uapi/linux/in.h
+@@ -140,6 +140,7 @@ struct in_addr {
+ #define MCAST_MSFILTER			48
+ #define IP_MULTICAST_ALL		49
+ #define IP_UNICAST_IF			50
++#define IP_RECVIFINDEX			51
+ 
+ #define MCAST_EXCLUDE	0
+ #define MCAST_INCLUDE	1
+diff --git a/net/8021q/vlan_core.c b/net/8021q/vlan_core.c
+index 53d3cb6..fe24f73 100644
+--- a/net/8021q/vlan_core.c
++++ b/net/8021q/vlan_core.c
+@@ -13,6 +13,8 @@ bool vlan_do_receive(struct sk_buff **skbp)
+ 	struct net_device *vlan_dev;
+ 	struct vlan_pcpu_stats *rx_stats;
+ 
++	if (!skb->orig_skb_iif)
++		skb->orig_skb_iif = skb->dev->ifindex;
+ 	vlan_dev = vlan_find_dev(skb->dev, vlan_proto, vlan_id);
+ 	if (!vlan_dev)
+ 		return false;
+diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
+index 4bef613..014025f 100644
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -142,6 +142,9 @@ int br_pass_frame_up(struct sk_buff *skb)
+ 
+ 	indev = skb->dev;
+ 	skb->dev = brdev;
++	if (!skb->orig_skb_iif) {
++		skb->orig_skb_iif = indev->ifindex;
++	}
+ 	skb = br_handle_vlan(br, pv, skb);
+ 	if (!skb)
+ 		return NET_RX_DROP;
+diff --git a/net/ipv4/ip_sockglue.c b/net/ipv4/ip_sockglue.c
+index 135045e..dbc5088 100644
+--- a/net/ipv4/ip_sockglue.c
++++ b/net/ipv4/ip_sockglue.c
+@@ -52,6 +52,7 @@
+ #define IP_CMSG_RETOPTS		16
+ #define IP_CMSG_PASSSEC		32
+ #define IP_CMSG_ORIGDSTADDR     64
++#define IP_CMSG_RECVIFINDEX     128
+ 
+ /*
+  *	SOL_IP control messages.
+@@ -72,6 +73,13 @@ static void ip_cmsg_recv_ttl(struct msghdr *msg, struct sk_buff *skb)
+ 	put_cmsg(msg, SOL_IP, IP_TTL, sizeof(int), &ttl);
+ }
+ 
++static void ip_cmsg_recv_ifindex(struct msghdr *msg, struct sk_buff *skb)
++{
++	int ifindex;
++	ifindex = skb->orig_skb_iif ? skb->orig_skb_iif : skb->skb_iif;
++	put_cmsg(msg, SOL_IP, IP_RECVIFINDEX, sizeof(int), &ifindex);
++}
++
+ static void ip_cmsg_recv_tos(struct msghdr *msg, struct sk_buff *skb)
+ {
+ 	put_cmsg(msg, SOL_IP, IP_TOS, 1, &ip_hdr(skb)->tos);
+@@ -177,11 +185,16 @@ void ip_cmsg_recv(struct msghdr *msg, struct sk_buff *skb)
+ 
+ 	if (flags & 1)
+ 		ip_cmsg_recv_security(msg, skb);
+-
+ 	if ((flags >>= 1) == 0)
+ 		return;
++
+ 	if (flags & 1)
+ 		ip_cmsg_recv_dstaddr(msg, skb);
++	if ((flags >>= 1) == 0)
++		return;
++
++	if (flags & 1)
++		ip_cmsg_recv_ifindex(msg, skb);
+ 
+ }
+ EXPORT_SYMBOL(ip_cmsg_recv);
+@@ -492,6 +505,7 @@ static int do_ip_setsockopt(struct sock *sk, int level,
+ 	case IP_MULTICAST_ALL:
+ 	case IP_MULTICAST_LOOP:
+ 	case IP_RECVORIGDSTADDR:
++	case IP_RECVIFINDEX:
+ 		if (optlen >= sizeof(int)) {
+ 			if (get_user(val, (int __user *) optval))
+ 				return -EFAULT;
+@@ -1025,6 +1039,12 @@ mc_msf_out:
+ 			goto e_inval;
+ 		inet->min_ttl = val;
+ 		break;
++	case IP_RECVIFINDEX:
++		if (val)
++			inet->cmsg_flags |=  IP_CMSG_RECVIFINDEX;
++		else
++			inet->cmsg_flags &= ~IP_CMSG_RECVIFINDEX;
++		break;
+ 
+ 	default:
+ 		err = -ENOPROTOOPT;
+@@ -1177,6 +1197,9 @@ static int do_ip_getsockopt(struct sock *sk, int level, int optname,
+ 	case IP_RECVTTL:
+ 		val = (inet->cmsg_flags & IP_CMSG_TTL) != 0;
+ 		break;
++	case IP_RECVIFINDEX:
++		val = (inet->cmsg_flags & IP_CMSG_RECVIFINDEX) != 0;
++		break;
+ 	case IP_RECVTOS:
+ 		val = (inet->cmsg_flags & IP_CMSG_TOS) != 0;
+ 		break;

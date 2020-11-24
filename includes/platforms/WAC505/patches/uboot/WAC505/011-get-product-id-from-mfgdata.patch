@@ -1,0 +1,113 @@
+diff --git a/arch/arm/cpu/armv7/qca/cmd_bootqca.c b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+index a542405..97d6e48 100644
+--- a/arch/arm/cpu/armv7/qca/cmd_bootqca.c
++++ b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+@@ -166,7 +166,7 @@ static int set_fs_bootargs(int *fs_on_nand)
+ 		setenv("wdtargs", wdt_args);
+ 	}
+ 
+-	return run_command("setenv bootargs ${bootargs} ${fsbootargs} ${mfgbootargs} ${failsafeargs} ${wdtargs} rootwait", 0);
++	return run_command("setenv bootargs ${product_id} ${bootargs} ${fsbootargs} ${mfgbootargs} ${failsafeargs} ${wdtargs} rootwait", 0);
+ }
+ 
+ int config_select(unsigned int addr, const char **config, char *rcmd, int rcmd_size)
+diff --git a/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c b/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
+index 5f5a172..c508f43 100644
+--- a/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
++++ b/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
+@@ -55,6 +55,12 @@
+ #include <asm/arch-qcom-common/clk.h>
+ #include <asm/arch-ipq40xx/smem.h>
+ 
++#define BOARD_PRODUCT_ID_OFFSET    0x19
++#define BOARD_PRODUCT_ID_LENGTH    0x6
++#define MANUDATA_PARTITION_OFFSET  0x700000
++#define CONFIG_SYS_FLASH_PAGE_SIZE 0x800
++#define READ_BUFF_SIZE CONFIG_SYS_FLASH_PAGE_SIZE /* Min read size is PAGE size for NAND flash */
++
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+ #define ADSS_AUDIO_RXM_CBCR_REG			0x0770012C
+@@ -99,6 +105,7 @@ qca_mmc mmc_host;
+ #endif
+ 
+ extern int spi_nand_init(void);
++static int get_mfg_data(int, size_t, uchar *);
+ 
+ /*
+  * Don't have this as a '.bss' variable. The '.bss' and '.rel.dyn'
+@@ -358,11 +365,21 @@ int board_late_init(void)
+ 	gpio_func_data_t *gpio;
+ 	unsigned int flash_type;
+ 	qca_smem_flash_info_t *sfi = &qca_smem_flash_info;
++	uchar product_id[BOARD_PRODUCT_ID_LENGTH + 1] = {'\0'};
++	int ret;
+ 
+ 	if (sfi->flash_type != SMEM_BOOT_MMC_FLASH) {
+ 		qca_get_part_details();
+ 	}
+ 
++	ret = get_mfg_data(BOARD_PRODUCT_ID_OFFSET, BOARD_PRODUCT_ID_LENGTH, product_id);
++	if (ret < 0) {
++		printf("Reading Product ID failed\n");
++	} else {
++		setenv("product_id", (const char *) product_id);
++		printf("Product ID: %s\n", product_id);
++	}
++
+ 	/* get machine type from SMEM and set in env */
+ 	machid = gd->bd->bi_arch_number;
+ 	printf("machid: %x\n", machid);
+@@ -566,6 +583,52 @@ int get_eth_mac_address(uchar *enetaddr, uint no_of_macs)
+ 	return ret;
+ }
+ 
++/* Function to get any MANUFACTURING DATA */
++static int get_mfg_data(int data_off, size_t length, uchar *data_buf)
++{
++	s32 ret = -1;
++	u32 start_blocks;
++	u32 size_blocks;
++	u32 flash_type;
++	u32 md_part_size = READ_BUFF_SIZE;
++	loff_t md_offset;
++	qca_smem_flash_info_t *sfi = &qca_smem_flash_info;
++	uchar mdBuff[READ_BUFF_SIZE];
++
++	if (sfi->flash_type != SMEM_BOOT_MMC_FLASH) {
++		if (qca_smem_flash_info.flash_type == SMEM_BOOT_SPI_FLASH)
++			flash_type = CONFIG_IPQ_SPI_NOR_INFO_IDX;
++		else if (qca_smem_flash_info.flash_type == SMEM_BOOT_NAND_FLASH)
++			flash_type = CONFIG_IPQ_NAND_NAND_INFO_IDX;
++		else {
++			printf("Unknown flash type\n");
++			return -EINVAL;
++		}
++
++		ret = smem_getpart("0:MANUDATA", &start_blocks, &size_blocks);
++		if (ret < 0) {
++			printf("No MANUFACTURING DATA partition found\n");
++			return ret;
++		}
++
++		md_offset =
++			((loff_t) qca_smem_flash_info.flash_block_size * start_blocks);
++
++		ret = nand_read(&nand_info[flash_type],
++				md_offset, &md_part_size, mdBuff);
++		if (ret < 0) {
++			printf("MANUFACTURING DATA partition read failed..\n");
++			return ret;
++		}
++
++		strncpy((char *) data_buf, (char *) (mdBuff + data_off), length);
++		data_buf[length] = '\0';
++		return 0;
++	}
++
++	return ret;
++}
++
+ static void ipq40xx_set_ethmac_addr(void)
+ {
+ 	int i, ret;

@@ -1,0 +1,130 @@
+diff --git a/arch/arm/cpu/armv7/qca/cmd_bootqca.c b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+index 48fbf5f..f7fef4e 100644
+--- a/arch/arm/cpu/armv7/qca/cmd_bootqca.c
++++ b/arch/arm/cpu/armv7/qca/cmd_bootqca.c
+@@ -22,6 +22,7 @@
+ #include <linux/mtd/ubi.h>
+ #include <asm/arch-ipq40xx/smem.h>
+ #include <mmc.h>
++#include <asm/io.h>
+ #include "ipq40xx_cdp.h"
+ 
+ #define DLOAD_MAGIC_COOKIE	0x10
+@@ -85,15 +86,76 @@ static int inline do_dumpipq_data(void)
+ }
+ #endif
+ 
++#define BOOT_MAX 5
++/* Swap rootfs offset address, If boot_cnt limit exceeds BOOT_MAX */
++static int dual_boot(void)
++{
++	char swap_addr[10] = {0};
++	int ret = 0;
++	unsigned long boot_cnt;
++	char *boot_cnt_str;
++
++	boot_cnt_str = getenv("boot_cnt");
++	printf("Boot count=%s\n", boot_cnt_str);
++	boot_cnt = boot_cnt_str ? simple_strtoul(boot_cnt_str, NULL, 10) : 0;
++	if (boot_cnt > BOOT_MAX) {
++		printf("Switching secondary partition\n");
++		strcpy(swap_addr, getenv("primary"));
++		setenv("primary", getenv("secondary"));
++		setenv("secondary", swap_addr);
++		run_command("setenv bootargs", 0);
++		run_command("setenv fsbootargs", 0);
++		run_command("setenv boot_cnt 0", 0);
++		saveenv();
++	}
++
++	return 0;
++}
++
+ /*
+  * Set the root device and bootargs for mounting root filesystem.
+  */
+ static int set_fs_bootargs(int *fs_on_nand)
+ {
+-	char *bootargs;
+-	unsigned int active_part = 0;
++    char *bootargs, *nand_bootargs;
++    unsigned long boot_cnt;
++    unsigned int active_part = 0;
++    char cmd[32], *boot_cnt_str;
+ 
+ #define nand_rootfs	"ubi.mtd=" QCA_ROOT_FS_PART_NAME " root=mtd:ubi_rootfs rootfstype=squashfs"
++    if (getenv("primary") == NULL) {
++        printf("Setting NVRAM variables!!!!!\n");
++        setenv("primary", "800000");
++        setenv("secondary", "3c00000");
++        setenv("fw_upgrade", "0");
++        setenv("boot_cnt", "0");
++        setenv("proceed_upgrade", "0");
++        saveenv();
++    }
++
++    boot_cnt_str = getenv("boot_cnt");
++    boot_cnt = boot_cnt_str ? simple_strtoul(boot_cnt_str, NULL, 10) : 0;
++
++    memset(cmd, '\0', sizeof(cmd));
++    sprintf(cmd, "setenv boot_cnt %u", boot_cnt + 1);
++    if (run_command(cmd, 0) != CMD_RET_SUCCESS) {
++        printf("%s: %s failed !!\n", __func__, cmd);
++    }
++    if (run_command("saveenv", 0) != CMD_RET_SUCCESS) {
++        printf("%s: saveenv failed !!\n", __func__);
++    }
++
++    if (simple_strtol((getenv("primary")), NULL, 16) == simple_strtol((getenv("secondary")), NULL, 16)) {
++        setenv("primary", getenv("bootpart"));
++        run_command("setenv secondary", 0);
++        saveenv();
++    }
++    dual_boot();
++    if (simple_strtol((getenv("primary")), NULL, 10) == 800000) {
++        nand_bootargs = "ubi.mtd=rootfs root=mtd:ubi_rootfs rootfstype=squashfs";
++    } else {
++        nand_bootargs = "ubi.mtd=rootfs_1 root=mtd:ubi_rootfs rootfstype=squashfs";
++    }
+ 
+ 	if (sfi->flash_type == SMEM_BOOT_SPI_FLASH) {
+ 		if (((sfi->rootfs.offset == 0xBAD0FF5E) &&
+@@ -120,7 +182,7 @@ static int set_fs_bootargs(int *fs_on_nand)
+ 				setenv("fsbootargs", bootargs);
+ 		}
+ 	} else if (sfi->flash_type == SMEM_BOOT_NAND_FLASH) {
+-		bootargs = nand_rootfs;
++		bootargs = nand_bootargs;
+ 		if (getenv("fsbootargs") == NULL)
+ 			setenv("fsbootargs", bootargs);
+ 		*fs_on_nand = 1;
+@@ -146,7 +208,7 @@ static int set_fs_bootargs(int *fs_on_nand)
+ 		return -EINVAL;
+ 	}
+ 
+-	return run_command("setenv bootargs ${bootargs} ${fsbootargs} rootwait", 0);
++	return run_command("setenv bootargs ${bootargs} ${fsbootargs} ${mfgbootargs} rootwait", 0);
+ }
+ 
+ int config_select(unsigned int addr, const char **config, char *rcmd, int rcmd_size)
+@@ -419,6 +481,7 @@ static int do_boot_unsignedimg(cmd_tbl_t *cmdtp, int flag, int argc, char *const
+ 			return -1;
+ 		}
+ 
++        sfi->rootfs.offset = simple_strtol((getenv("primary")), NULL, 16);
+ 		snprintf(runcmd, sizeof(runcmd),
+ 			"set mtdids nand0=nand0 && "
+ 			"set mtdparts mtdparts=nand0:0x%llx@0x%llx(fs),${msmparts} && "
+diff --git a/arch/arm/include/asm/arch-ipq40xx/smem.h b/arch/arm/include/asm/arch-ipq40xx/smem.h
+index 8c10f48..7f7d2a4 100644
+--- a/arch/arm/include/asm/arch-ipq40xx/smem.h
++++ b/arch/arm/include/asm/arch-ipq40xx/smem.h
+@@ -16,7 +16,7 @@
+ 
+ #define RAM_PARTITION_SDRAM 14
+ #define RAM_PARTITION_SYS_MEMORY 1
+-#define IPQ_NAND_ROOTFS_SIZE (64 << 20)
++#define IPQ_NAND_ROOTFS_SIZE (52 << 20)
+ 
+ #define SOCINFO_VERSION_MAJOR(ver) ((ver & 0xffff0000) >> 16)
+ #define SOCINFO_VERSION_MINOR(ver) (ver & 0x0000ffff)

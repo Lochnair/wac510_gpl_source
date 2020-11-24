@@ -1,0 +1,93 @@
+diff --git a/arch/arm/mach-qcom/wac5xx_gpio_init.c b/arch/arm/mach-qcom/wac5xx_gpio_init.c
+index 4d56de5..2502176 100644
+--- a/arch/arm/mach-qcom/wac5xx_gpio_init.c
++++ b/arch/arm/mach-qcom/wac5xx_gpio_init.c
+@@ -19,6 +19,8 @@
+ 
+ #include <linux/wac5xx_gpio.h>
+ 
++#include <linux/proc_fs.h>
++#define LED_STATUS_MAXSIZE 2
+ char g_product_id[7] = {0};
+ static char *g_mfg_mode = NULL;
+ static unsigned long g_mfg_data = -1;
+@@ -32,8 +34,49 @@ static struct work_struct reset_button_work;
+ static int led_gpio_num = 0;
+ struct gpio *current_p_gpio = NULL;
+ static int current_p_gpio_num = 0;
++/* proc_fs for ledControl */
++static unsigned long procfs_buffer_size = 0;
++char w5xx_led_status[LED_STATUS_MAXSIZE] = {0};
++int ctrl_all_led_off = 0;
++struct proc_dir_entry *proc_entry_ledstatus = NULL;
+ 
+ EXPORT_SYMBOL(g_product_id);
++EXPORT_SYMBOL(ctrl_all_led_off);
++
++int write_proc_ledControl(struct file *filp, const char *__user_buf, size_t len, loff_t *offp) 
++{
++        if(len >= LED_STATUS_MAXSIZE) {
++                procfs_buffer_size = LED_STATUS_MAXSIZE;
++        } else {
++                procfs_buffer_size = len;
++        }
++        if (copy_from_user(w5xx_led_status, __user_buf, procfs_buffer_size)) {
++                return -EFAULT;
++        }
++        w5xx_led_status[procfs_buffer_size - 1] = '\0';
++        if(!strcmp(w5xx_led_status,"0")) {
++                ctrl_all_led_off = 0;
++        } else {
++                ctrl_all_led_off = 1;
++        }
++        return len;
++}
++
++int read_proc_ledControl(struct file *filp, char *__user_buf, size_t len, loff_t *offp) {
++        return 0;
++}
++
++struct file_operations ledControl_proc_fops = {
++        .read = read_proc_ledControl,
++        .write =  write_proc_ledControl
++};
++
++static void ath_create_ledControl(void)
++{
++	proc_entry_ledstatus = proc_create("ledControl", 0666, NULL, &ledControl_proc_fops);
++	printk(KERN_INFO "Proc : LED control created !!");
++}
++
+ static void button_press_handler(struct work_struct *work_q)
+ {
+     unsigned long stop;
+@@ -313,6 +356,7 @@ err_platform_gpio_request:
+ 
+ static int __init wac5xx_gpios_init(void)
+ {
++	ath_create_ledControl(); /* ledControl proc */
+ 	if (!machine_is_wac5xx()) {
+ 		if (platform_gpio_init()) {
+ 			printk(KERN_INFO "WAC5xx: %s : Error platform init!!!\n", __func__);
+diff --git a/drivers/leds/net-blink.c b/drivers/leds/net-blink.c
+index aa4ccbb..05f61c4 100644
+--- a/drivers/leds/net-blink.c
++++ b/drivers/leds/net-blink.c
+@@ -35,6 +35,7 @@
+ #define BLINK_ON_TIME  100
+ #define BLINK_OFF_TIME 100
+ 
++extern int ctrl_all_led_off;
+ typedef enum _BLINK_STATE {
+     BLINK_DONE = 0,
+     BLINK_LED_ON = 1,
+@@ -48,6 +49,9 @@ static void blink_timer_function (unsigned long data)
+ 	struct net_blink_data *blink = ( struct net_blink_data*) data;
+ 
+ _start:
++	if(ctrl_all_led_off != 0){
++		blink->cur_state = BLINK_LED_ON;
++	}
+ 	switch(blink->cur_state) {
+ 		case BLINK_DONE:
+ 			blink->cur_state = BLINK_LED_ON;

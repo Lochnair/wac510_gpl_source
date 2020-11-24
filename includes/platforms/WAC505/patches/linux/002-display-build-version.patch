@@ -1,0 +1,35 @@
+diff --git a/Makefile b/Makefile
+index d0e406a..bdbf182 100644
+--- a/Makefile
++++ b/Makefile
+@@ -395,6 +395,7 @@ KBUILD_LDFLAGS_MODULE = -T $(srctree)/scripts/module-common.lds
+ # Read KERNELRELEASE from include/config/kernel.release (if it exists)
+ KERNELRELEASE = $(shell cat include/config/kernel.release 2> /dev/null)
+ KERNELVERSION = $(VERSION)$(if $(PATCHLEVEL),.$(PATCHLEVEL)$(if $(SUBLEVEL),.$(SUBLEVEL)))$(EXTRAVERSION)
++BUILD_VERSION = $(shell cat ../version | cut -f 2 -d "_" 2>/dev/null)
+ 
+ export VERSION PATCHLEVEL SUBLEVEL KERNELRELEASE KERNELVERSION
+ export ARCH SRCARCH CONFIG_SHELL HOSTCC HOSTCFLAGS CROSS_COMPILE AS LD CC
+@@ -902,7 +903,8 @@ define filechk_utsrelease.h
+ 	  echo '"$(KERNELRELEASE)" exceeds $(uts_len) characters' >&2;    \
+ 	  exit 1;                                                         \
+ 	fi;                                                               \
+-	(echo \#define UTS_RELEASE \"$(KERNELRELEASE)\";)
++	(echo \#define UTS_RELEASE \"$(KERNELRELEASE)\"; \
++	echo \#define SW_VERSION \"$(BUILD_VERSION)\";)
+ endef
+ 
+ define filechk_version.h
+diff --git a/init/version.c b/init/version.c
+index 1a4718e..4bde34b 100644
+--- a/init/version.c
++++ b/init/version.c
+@@ -41,7 +41,7 @@ EXPORT_SYMBOL_GPL(init_uts_ns);
+ 
+ /* FIXED STRINGS! Don't touch! */
+ const char linux_banner[] =
+-	"Linux version " UTS_RELEASE " (" LINUX_COMPILE_BY "@"
++	"Linux version " UTS_RELEASE"-"SW_VERSION " (" LINUX_COMPILE_BY "@"
+ 	LINUX_COMPILE_HOST ") (" LINUX_COMPILER ") " UTS_VERSION "\n";
+ 
+ const char linux_proc_banner[] =

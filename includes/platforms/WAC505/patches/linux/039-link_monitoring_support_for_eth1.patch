@@ -1,0 +1,14 @@
+--- a/arch/arm/boot/dts/qcom-ipq40xx.dtsi	2018-04-11 16:11:12.000000000 +0530
++++ b/arch/arm/boot/dts/qcom-ipq40xx.dtsi	2018-09-10 15:14:07.004774210 +0530
+@@ -612,7 +612,11 @@
+ 			};
+ 			gmac1 {
+ 				local-mac-address = [000000000000];
++				qcom,phy-mdio-addr = <3>;
++				qcom,poll-required = <1>;
+ 				qcom,poll-required-dynamic = <1>;
++				qcom,forced-speed = <1000>;
++				qcom,forced-duplex = <1>;
+ 				vlan-tag = <1 0x1e>;
+ 			};
+ 		};

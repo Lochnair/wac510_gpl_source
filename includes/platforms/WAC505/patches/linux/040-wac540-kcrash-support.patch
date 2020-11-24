@@ -1,0 +1,48 @@
+diff --git a/drivers/mtd/mtdoops.c b/drivers/mtd/mtdoops.c
+index 7140708..1dd26a7 100644
+--- a/drivers/mtd/mtdoops.c
++++ b/drivers/mtd/mtdoops.c
+@@ -96,7 +96,7 @@ static int page_is_used(struct mtdoops_context *cxt, int page)
+ }
+ 
+ #define is_prodcut_id_wac505() (!strncmp(g_product_id, "WAC505", 6))
+-
++#define is_prodcut_id_wac540() (!strncmp(g_product_id, "WAC540", 6))
+ static void mtdoops_erase_callback(struct erase_info *done)
+ {
+ 	wait_queue_head_t *wait_q = (wait_queue_head_t *)done->priv;
+@@ -182,7 +182,7 @@ static void mtdoops_workfunc_erase(struct work_struct *work)
+ 	}
+ 
+     while (1) {
+-           if ( is_prodcut_id_wac505() ) {
++           if ( is_prodcut_id_wac505()  || is_prodcut_id_wac540() ) {
+                 block_address = ALIGNPARAM(block_address, mtd->erasesize);
+            }
+            else {
+@@ -241,7 +241,7 @@ static void mtdoops_write(struct mtdoops_context *cxt, int panic)
+ 
+ 	if (panic) {
+ 		printk (KERN_NOTICE "calling mtd_panic_write!\n");
+-               if (is_prodcut_id_wac505()) {
++               if (is_prodcut_id_wac505() || is_prodcut_id_wac540()) {
+                        bust_spinlocks(1);
+                        ret = mtd_write(mtd, cxt->nextpage * record_size,
+                                        record_size, &retlen, cxt->oops_buf);
+@@ -287,7 +287,7 @@ static void find_next_position(struct mtdoops_context *cxt)
+ 	size_t retlen;
+ 
+ 	for (page = 0; page < cxt->oops_pages; page++) {
+-        if (is_prodcut_id_wac505()) {
++        if (is_prodcut_id_wac505() || is_prodcut_id_wac540()) {
+             block_address = ALIGNPARAM((cxt->nextpage * record_size), mtd->erasesize);
+         }
+         else {
+@@ -376,6 +376,7 @@ static void mtdoops_do_dump(struct kmsg_dumper *dumper,
+ 
+ 	if (reason != KMSG_DUMP_OOPS) {
+ 		/* Panics must be written immediately */
++        printk(KERN_NOTICE "calling mtdoops_write , 1\n");
+ 		mtdoops_write(cxt, 1);
+ 	} else {
+ 		/* For other cases, schedule work to write it "nicely" */

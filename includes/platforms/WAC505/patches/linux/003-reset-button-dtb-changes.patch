@@ -1,0 +1,42 @@
+diff --git a/arch/arm/boot/dts/qcom-ipq40xx-ap.dk01.1.dtsi b/arch/arm/boot/dts/qcom-ipq40xx-ap.dk01.1.dtsi
+index 32d7188..930fc78 100644
+--- a/arch/arm/boot/dts/qcom-ipq40xx-ap.dk01.1.dtsi
++++ b/arch/arm/boot/dts/qcom-ipq40xx-ap.dk01.1.dtsi
+@@ -83,12 +83,6 @@
+ 				};
+ 			};
+ 
+-			wps_pins: wps_pinmux {
+-				mux {
+-					pins = "gpio63";
+-					bias-pull-up;
+-				};
+-			};
+ 		};
+ 
+ 		serial@78af000 {
+@@ -156,24 +150,4 @@
+ 			>;
+ 		};
+ 
+-		gpio_keys {
+-			pinctrl-0 = <&wps_pins>;
+-			pinctrl-names = "default";
+-			compatible = "gpio-keys";
+-
+-			button@1 {
+-				label = "wps";
+-				linux,code = <KEY_WPS_BUTTON>;
+-				gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
+-				linux,input-type = <1>;
+-			};
+-		};
+-		wifi0: wifi@a000000 {
+-			wifi-led-gpios = <&tlmm 58 GPIO_ACTIVE_LOW>;
+-		};
+-
+-		wifi1: wifi@a800000 {
+-			wifi-led-gpios = <&tlmm 58 GPIO_ACTIVE_LOW>;
+-		};
+-
+ 	};

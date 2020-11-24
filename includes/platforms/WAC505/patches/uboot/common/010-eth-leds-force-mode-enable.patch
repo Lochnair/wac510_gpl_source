@@ -1,0 +1,18 @@
+diff --git a/drivers/net/ipq40xx/ipq40xx_qca8075.c b/drivers/net/ipq40xx/ipq40xx_qca8075.c
+index cb04a05..665598d 100644
+--- a/drivers/net/ipq40xx/ipq40xx_qca8075.c
++++ b/drivers/net/ipq40xx/ipq40xx_qca8075.c
+@@ -768,5 +768,13 @@ int ipq40xx_qca8075_phy_init(struct ipq40xx_eth_dev *info)
+ 	phy_data &= (~(1 << 1));
+ 	qca8075_phy_mmd_write(0, 4, QCA8075_PHY_MMD3_NUM, 0x805a, phy_data);
+ 
++	/*
++	 * Enable force mode for Ethernet Port LEDs
++	 */
++	qca8075_phy_mmd_write(0, 3, QCA8075_PHY_MMD7_NUM, 0x8075, 0x8640); /* LAN port LED_100M */
++	qca8075_phy_mmd_write(0, 3, QCA8075_PHY_MMD7_NUM, 0x8077, 0x8640); /* LAN port LED_1000M */
++	qca8075_phy_mmd_write(0, 4, QCA8075_PHY_MMD7_NUM, 0x8075, 0x8640); /* WAN port LED_100M */
++	qca8075_phy_mmd_write(0, 4, QCA8075_PHY_MMD7_NUM, 0x8077, 0x8640); /* WAN port LED_1000M */
++
+ 	return 0;
+ }

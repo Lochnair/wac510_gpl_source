@@ -1,0 +1,132 @@
+diff --git a/drivers/mtd/mtdoops.c b/drivers/mtd/mtdoops.c
+index ed550c9..7140708 100644
+--- a/drivers/mtd/mtdoops.c
++++ b/drivers/mtd/mtdoops.c
+@@ -33,6 +33,7 @@
+ #include <linux/mtd/mtd.h>
+ #include <linux/kmsg_dump.h>
+ 
++#define ALIGNPARAM(x,y) ((x) & ~(y))
+ /* Maximum MTD partition size */
+ #define MTDOOPS_MAX_MTD_SIZE (768 * 1024)
+ 
+@@ -48,6 +49,8 @@
+  * but from our observation, 16K should do
+  * */
+ static unsigned long record_size = (16*1024);
++extern char g_product_id[7];
++loff_t block_address = 0;
+ module_param(record_size, ulong, 0400);
+ MODULE_PARM_DESC(record_size,
+ 		"record size for MTD OOPS pages in bytes (default 4096)");
+@@ -92,6 +95,8 @@ static int page_is_used(struct mtdoops_context *cxt, int page)
+ 	return test_bit(page, cxt->oops_page_used);
+ }
+ 
++#define is_prodcut_id_wac505() (!strncmp(g_product_id, "WAC505", 6))
++
+ static void mtdoops_erase_callback(struct erase_info *done)
+ {
+ 	wait_queue_head_t *wait_q = (wait_queue_head_t *)done->priv;
+@@ -165,7 +170,6 @@ static void mtdoops_workfunc_erase(struct work_struct *work)
+ 			container_of(work, struct mtdoops_context, work_erase);
+ 	struct mtd_info *mtd = cxt->mtd;
+ 	int i = 0, j, ret, mod;
+-
+ 	/* We were unregistered */
+ 	if (!mtd)
+ 		return;
+@@ -177,7 +181,15 @@ static void mtdoops_workfunc_erase(struct work_struct *work)
+ 			cxt->nextpage = 0;
+ 	}
+ 
+-	while ((ret = mtd_block_isbad(mtd, cxt->nextpage * record_size)) > 0) {
++    while (1) {
++           if ( is_prodcut_id_wac505() ) {
++                block_address = ALIGNPARAM(block_address, mtd->erasesize);
++           }
++           else {
++                block_address = cxt->nextpage * record_size;
++           }
++           if((ret = mtd_block_isbad(mtd, block_address)) <= 0)
++                break;
+ badblock:
+ 		printk(KERN_WARNING "mtdoops: bad block at %08lx\n",
+ 		       cxt->nextpage * record_size);
+@@ -229,8 +241,15 @@ static void mtdoops_write(struct mtdoops_context *cxt, int panic)
+ 
+ 	if (panic) {
+ 		printk (KERN_NOTICE "calling mtd_panic_write!\n");
+-		ret = mtd_panic_write(mtd, cxt->nextpage * record_size,
+-				      record_size, &retlen, cxt->oops_buf);
++               if (is_prodcut_id_wac505()) {
++                       bust_spinlocks(1);
++                       ret = mtd_write(mtd, cxt->nextpage * record_size,
++                                       record_size, &retlen, cxt->oops_buf);
++                      bust_spinlocks(0);
++              } else {
++                      ret = mtd_panic_write(mtd, cxt->nextpage * record_size,
++                                            record_size, &retlen, cxt->oops_buf);
++              }
+ 		if (ret == -EOPNOTSUPP) {
+ 			printk(KERN_ERR "mtdoops: Cannot write from panic without panic_write\n");
+ 			return;
+@@ -268,8 +287,14 @@ static void find_next_position(struct mtdoops_context *cxt)
+ 	size_t retlen;
+ 
+ 	for (page = 0; page < cxt->oops_pages; page++) {
+-		if (mtd_block_isbad(mtd, page * record_size))
+-			continue;
++        if (is_prodcut_id_wac505()) {
++            block_address = ALIGNPARAM((cxt->nextpage * record_size), mtd->erasesize);
++        }
++        else {
++                block_address = page * record_size;
++        }
++        if (mtd_block_isbad(mtd, block_address))
++		    continue;
+ 		/* Assume the page is used */
+ 		mark_page_used(cxt, page);
+ 		ret = mtd_read(mtd, page * record_size, MTDOOPS_HEADER_SIZE,
+diff --git a/drivers/mtd/ofpart.c b/drivers/mtd/ofpart.c
+index aa26c32..2230436 100644
+--- a/drivers/mtd/ofpart.c
++++ b/drivers/mtd/ofpart.c
+@@ -20,6 +20,10 @@
+ #include <linux/slab.h>
+ #include <linux/mtd/partitions.h>
+ 
++extern char g_product_id[7];
++
++#define is_prodcut_id_wac505() (!strncmp(g_product_id, "WAC505", 6))
++
+ static bool node_has_compatible(struct device_node *pp)
+ {
+ 	return of_get_property(pp, "compatible", NULL);
+@@ -53,8 +57,10 @@ static int parse_ofpart_partitions(struct mtd_info *master,
+ 
+ 	if (nr_parts == 0)
+ 		return 0;
+-
+-	*pparts = kzalloc(nr_parts * sizeof(**pparts), GFP_KERNEL);
++    if(is_prodcut_id_wac505()) {
++    nr_parts++; /*to create oops log partition */
++	}
++    *pparts = kzalloc(nr_parts * sizeof(**pparts), GFP_KERNEL);
+ 	if (!*pparts)
+ 		return -ENOMEM;
+ 
+@@ -91,6 +97,13 @@ static int parse_ofpart_partitions(struct mtd_info *master,
+ 
+ 		i++;
+ 	}
++    if(is_prodcut_id_wac505()) {
++    /* Adding oops log partition */
++       (*pparts)[i].offset = 0x7f00000;
++       (*pparts)[i].size =  0x80000;
++       (*pparts)[i].name = "Oops_log";
++       i++;
++    }
+ 
+ 	if (!i) {
+ 		of_node_put(pp);

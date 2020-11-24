@@ -1,0 +1,38 @@
+diff -rupN wifidog-1.1.3_beta1/src/gateway.c wifidog-1.1.3_beta1-mod/src/gateway.c
+--- wifidog-1.1.3_beta1/src/gateway.c	2014-09-17 11:32:39.200418707 +0530
++++ wifidog-1.1.3_beta1-mod/src/gateway.c	2014-09-17 11:39:47.195727811 +0530
+@@ -871,6 +871,22 @@ main_loop(void)
+ 		exit(1);
+ 	}
+ 
++	{
++
++	/* find out what port was assigned */
++               
++                int namelen = 0;
++                struct sockaddr_in server;
++                memset(&server, 0, sizeof(server));
++                namelen = sizeof(server);
++                if(getsockname( webserver->serverSock, (struct sockaddr *) &server, &namelen) < 0 ) {
++                        fprintf(stderr, "getsockname() failed to get port number\n");
++                        exit(4);
++                }
++                fprintf(stderr,"The assigned port is %d\n", ntohs( server.sin_port));
++                config->gw_port = ntohs(server.sin_port);
++        }
++
+ 	debug(LOG_DEBUG, "Assigning callbacks to web server");
+ 	httpdAddCContent(webserver, "/", "wifidog", 0, NULL, http_callback_wifidog);
+ 	httpdAddCContent(webserver, "/wifidog", "", 0, NULL, http_callback_wifidog);
+diff -rupN wifidog-1.1.3_beta1/src/iwevent.c wifidog-1.1.3_beta1-mod/src/iwevent.c
+--- wifidog-1.1.3_beta1/src/iwevent.c	2014-09-17 11:32:39.191421227 +0530
++++ wifidog-1.1.3_beta1-mod/src/iwevent.c	2014-09-17 11:37:20.241168988 +0530
+@@ -38,7 +38,7 @@
+ #endif /* IFLA_WIRELESS */
+ 
+ #ifndef IFLA_HTTPREDIR
+-#define IFLA_HTTPREDIR  (IFLA_MASTER + 9)
++#define IFLA_HTTPREDIR  (IFLA_MASTER + 16)
+ #endif /* IFLA_HTTPREDIR */
+ 
+ 

@@ -1,0 +1,31 @@
+diff --git a/drivers/leds/net-blink.c b/drivers/leds/net-blink.c
+index 05f61c4..0208484 100644
+--- a/drivers/leds/net-blink.c
++++ b/drivers/leds/net-blink.c
+@@ -50,20 +50,20 @@ static void blink_timer_function (unsigned long data)
+ 
+ _start:
+ 	if(ctrl_all_led_off != 0){
+-		blink->cur_state = BLINK_LED_ON;
++		blink->cur_state = BLINK_DONE;
+ 	}
+ 	switch(blink->cur_state) {
+ 		case BLINK_DONE:
+-			blink->cur_state = BLINK_LED_ON;
+-			gpio_set_value(blink->gpio, W710_LED_ON);
+-			mod_timer(&blink->timer, jiffies + msecs_to_jiffies(BLINK_ON_TIME));
+-			break;
+-		case BLINK_LED_ON:
+ 			blink->cur_state = BLINK_LED_OFF;
+ 			gpio_set_value(blink->gpio, W710_LED_OFF);
+ 			mod_timer(&blink->timer, jiffies + msecs_to_jiffies(BLINK_OFF_TIME));
+ 			break;
+ 		case BLINK_LED_OFF:
++			blink->cur_state = BLINK_LED_ON;
++			gpio_set_value(blink->gpio, W710_LED_ON);
++			mod_timer(&blink->timer, jiffies + msecs_to_jiffies(BLINK_ON_TIME));
++			break;
++		case BLINK_LED_ON:
+ 			blink->cur_state = BLINK_DONE;
+ 			if (g_blink_set) {
+ 				g_blink_set = 0;

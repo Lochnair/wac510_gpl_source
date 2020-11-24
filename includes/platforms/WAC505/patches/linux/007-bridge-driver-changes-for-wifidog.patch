@@ -1,0 +1,1450 @@
+diff --git a/include/linux/br_hook_defs.h b/include/linux/br_hook_defs.h
+new file mode 100644
+index 0000000..0e88c00
+--- /dev/null
++++ b/include/linux/br_hook_defs.h
+@@ -0,0 +1,32 @@
++/*
++ * br_hook_defs.h
++ *
++ * Copyright (c) Arada Systems, 1996-2007
++ *
++ */
++
++/* List of hooks */
++#define BR_PREROUTING          0
++#define BR_POSTROUTING         1
++#define BR_INPUT           2
++
++/* Rule positions */
++#define BR_FIRST           0
++#define BR_NEXT                1
++
++/* List of targets */
++#define NULL_TARGET            0
++#define ADD_VLAN_TAG_AND_CONTINUE  1
++#define REM_VLAN_TAG_AND_CONTINUE  2
++#define ACCEPT_EAPOL           3
++
++struct br_hook_ioctl {
++   int hook;
++   int position;
++   char bridge[IFNAMSIZ];
++   char indev[IFNAMSIZ];
++   char outdev[IFNAMSIZ];
++   unsigned int pkt_type;
++   int target;
++   int arg;
++};
+diff --git a/include/uapi/linux/if.h b/include/uapi/linux/if.h
+index 1c88a4a..3daa912 100644
+--- a/include/uapi/linux/if.h
++++ b/include/uapi/linux/if.h
+@@ -85,6 +85,12 @@
+ 					 * change when it's running */
+ #define IFF_MACVLAN 0x200000		/* Macvlan device */
+ #define IFF_NO_IP_ALIGN	0x200000	/* do not ip-align allocated rx pkts */
++#define IFF_WIFI_VAP 0x400000
++
++#if CONFIG_HTTP_REDIRECT_ENABLED
++#define IFF_CAPTIVE_FLAG 0x800000
++#endif
++
+ #define IFF_TUN_TAP 0x10000000		/* virtual tunnel device */
+ #define IFF_PPP_L2TPV2 0x1000000
+ #define IFF_PPP_L2TPV3 0x2000000
+diff --git a/include/uapi/linux/if_link.h b/include/uapi/linux/if_link.h
+index 99d8ba8..008f01d 100644
+--- a/include/uapi/linux/if_link.h
++++ b/include/uapi/linux/if_link.h
+@@ -144,6 +144,8 @@ enum {
+ 	IFLA_NUM_RX_QUEUES,
+ 	IFLA_CARRIER,
+ 	IFLA_PHYS_PORT_ID,
++	IFLA_HTTPREDIR,
++#define IFLA_HTTPREDIR IFLA_HTTPREDIR
+ 	__IFLA_MAX
+ };
+ 
+diff --git a/include/uapi/linux/rtnetlink.h b/include/uapi/linux/rtnetlink.h
+index 2e21aca..b7a22fb 100644
+--- a/include/uapi/linux/rtnetlink.h
++++ b/include/uapi/linux/rtnetlink.h
+@@ -341,6 +341,12 @@ struct rtnexthop {
+ #define RTNH_SPACE(len)	RTNH_ALIGN(RTNH_LENGTH(len))
+ #define RTNH_DATA(rtnh)   ((struct rtattr*)(((char*)(rtnh)) + RTNH_LENGTH(0)))
+ 
++#define RTA_PUT(skb, attrtype, attrlen, data) \
++ ({  if (unlikely(skb_tailroom(skb) < (int)RTA_SPACE(attrlen))) \
++          goto rtattr_failure; \
++     __rta_fill(skb, attrtype, attrlen, data); })
++
++
+ /* RTM_CACHEINFO */
+ 
+ struct rta_cacheinfo {
+diff --git a/include/uapi/linux/sysctl.h b/include/uapi/linux/sysctl.h
+index 6d67213..1c50957 100644
+--- a/include/uapi/linux/sysctl.h
++++ b/include/uapi/linux/sysctl.h
+@@ -776,6 +776,16 @@ enum {
+ 	NET_BRIDGE_NF_CALL_IP6TABLES = 3,
+ 	NET_BRIDGE_NF_FILTER_VLAN_TAGGED = 4,
+ 	NET_BRIDGE_NF_FILTER_PPPOE_TAGGED = 5,
++	NET_BRIDGE_HTTP_REDIRECT_ENABLED = 6,
++	NET_BRIDGE_HTTP_REDIRECT_ADD_MAC = 7,
++	NET_BRIDGE_HTTP_REDIRECT_DEL_MAC = 8,
++	NET_BRIDGE_HTTP_REDIRECT_FLUSH_MAC = 9,
++	NET_BRIDGE_HTTP_REDIRECT_PRINT_MAC = 10,
++	NET_BRIDGE_HTTP_REDIRECT_ADD_IP = 11,
++	NET_BRIDGE_HTTP_REDIRECT_DEL_IP = 12,
++	NET_BRIDGE_HTTP_REDIRECT_PRINT_IP = 13,
++	NET_BRIDGE_HTTP_REDIRECT_FLUSH_IP = 14,
++	
+ };
+ 
+ /* proc/sys/net/irda */
+diff --git a/net/Kconfig b/net/Kconfig
+index 16d7cb9..a43fdf3 100644
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -194,6 +194,17 @@ config BRIDGE_NETFILTER
+ 
+ 	  If unsure, say N.
+ 
++config HTTP_REDIRECT_ENABLED
++  	bool "HTTP Redirect"
++   	depends on BRIDGE
++   	default n
++   	---help---
++    	Enabling this option will allow the first HTTP packet coming from
++       	wireless station to go to redirected URL.
++
++       	If unsure, say N.
++
++
+ source "net/netfilter/Kconfig"
+ source "net/ipv4/netfilter/Kconfig"
+ source "net/ipv6/netfilter/Kconfig"
+diff --git a/net/bridge/Makefile b/net/bridge/Makefile
+index e85498b..3fa8307 100644
+--- a/net/bridge/Makefile
++++ b/net/bridge/Makefile
+@@ -6,7 +6,7 @@ obj-$(CONFIG_BRIDGE) += bridge.o
+ 
+ bridge-y	:= br.o br_device.o br_fdb.o br_forward.o br_if.o br_input.o \
+ 			br_ioctl.o br_notify.o br_stp.o br_stp_bpdu.o \
+-			br_stp_if.o br_stp_timer.o br_netlink.o
++			br_stp_if.o br_stp_timer.o br_netlink.o br_hrdb.o br_event.o
+ 
+ bridge-$(CONFIG_SYSFS) += br_sysfs_if.o br_sysfs_br.o
+ 
+diff --git a/net/bridge/br.c b/net/bridge/br.c
+index 644e9df..857467b 100644
+--- a/net/bridge/br.c
++++ b/net/bridge/br.c
+@@ -22,6 +22,368 @@
+ 
+ #include "br_private.h"
+ 
++
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++int brhttp_redirect_enabled = 0;
++unsigned char brhttp_redirect_add_mac[16];
++unsigned char brhttp_redirect_del_mac[16];
++int brhttp_redirect_flush_mac = 0;
++int brhttp_redirect_print_mac = 0;
++unsigned int brhttp_redirect_add_ip = 0;
++unsigned int brhttp_redirect_del_ip = 0;
++unsigned int brhttp_redirect_print_ip = 0;
++unsigned int brhttp_redirect_flush_ip = 0;
++unsigned char brhttp_redirect_cpauth_status[18];
++unsigned int brhttp_redirect_reset_entry = 0;
++#endif
++
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++extern int br_hrdb_init(void);
++extern int br_hrdb_flush(void);
++extern int br_hrdb_add(const unsigned char *mac);
++extern int br_hrdb_del(const unsigned char *mac);
++extern void br_hrdb_print(void);
++extern void br_hrdb_add_ip(unsigned int);
++extern void br_hrdb_del_ip(unsigned int);
++extern int br_hrdb_find_ip(unsigned int);
++extern void br_hrdb_print_ip(void);
++extern void br_hrdb_flush_ip(void);
++extern int br_hrdb_mark_cpauth_status(const unsigned char *mac, unsigned int status);
++extern void br_hrdb_reset_mac_entry(void);
++#endif
++
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++static
++int br_sysctl_call_brhttp_redirect_enabled(ctl_table * ctl, int write, 
++               void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++   int ret;
++
++   ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++   if (write) {
++        if(*(int *)(ctl->data))
++           *(int *)(ctl->data) = 1;
++
++       if (brhttp_redirect_enabled)
++           printk(KERN_NOTICE "br: HTTP redirect enabled\n");
++       else
++           printk(KERN_NOTICE "br: HTTP redirect disabled\n");
++   }
++
++   return ret;
++}
++
++static
++int br_sysctl_call_brhttp_redirect_add_ip(ctl_table * ctl, int write,
++                           void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++       int ret;
++
++       ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++       if (write) {
++               if( br_hrdb_find_ip(brhttp_redirect_add_ip) )
++                       br_hrdb_add_ip(brhttp_redirect_add_ip);
++       }
++
++       return ret;
++}
++
++static
++int br_sysctl_call_brhttp_redirect_print_ip(ctl_table * ctl, int write,
++                           void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++       int ret;
++
++       ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++       if (write) {
++               br_hrdb_print_ip();
++       }
++
++       return ret;
++}
++
++static
++int br_sysctl_call_brhttp_redirect_flush_ip(ctl_table * ctl, int write,
++                           void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++       int ret;
++
++       ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++       if (write) {
++               if(brhttp_redirect_flush_ip)
++                       br_hrdb_flush_ip();
++       }
++
++       return ret;
++}
++
++static
++int br_sysctl_call_brhttp_redirect_del_ip(ctl_table * ctl, int write,
++                           void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++       int ret;
++
++       ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++       if (write) {
++               br_hrdb_del_ip(brhttp_redirect_del_ip);
++       }
++
++       return ret;
++}
++
++
++static void scan_mac(const char *ascii_mac, char *mac)
++{
++   int i, j = 0;
++   int len = (strlen(ascii_mac) < 12) ? strlen(ascii_mac) : 12;
++
++   for (i = 0; i < len; i++) {
++       unsigned char nibble = ascii_mac[i];
++
++       if (nibble >= '0' && nibble <= '9')
++           nibble -= '0';
++       else if (nibble >= 'a' && nibble <= 'f')
++           nibble = 0xa + nibble - 'a';
++       else
++           nibble = 0xa + nibble - 'A';
++
++       if (i & 0x1) {
++           mac[j] = (mac[j] << 4) | nibble;
++           j++;
++       } else {
++           mac[j] = nibble;
++       }
++   }
++}
++
++int scan_str(unsigned char *str, unsigned char *mac, unsigned int *status)
++{
++        unsigned char MAC[16], nibble;
++
++        int i;
++        if(!str)
++                return -1;
++
++        i = 0;
++        while(i<=12 && str[i]!='-'){
++                nibble = str[i];
++                if( !(nibble >='0' && nibble <='9') &&
++                    !(nibble >='a' && nibble <='f') &&
++                    !(nibble >='A' && nibble <='F'))
++                        return -1;
++                MAC[i] = nibble;
++                ++i;
++        }
++        scan_mac(MAC, mac);
++        *status = str[++i] - '0';
++        return 0;
++}
++
++
++
++
++
++static
++int br_sysctl_call_brhttp_redirect_add_mac(ctl_table * ctl, int write, 
++               void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++   int ret;
++
++   ret = proc_dostring(ctl, write, buffer, lenp, ppos);
++
++   if (write) {
++       unsigned char mac[ETH_ALEN];
++       scan_mac(brhttp_redirect_add_mac, mac);
++       br_hrdb_add(mac);
++   }
++
++   return ret;
++}
++
++static
++int br_sysctl_call_brhttp_redirect_del_mac(ctl_table * ctl, int write,
++               void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++   int ret;
++
++   ret = proc_dostring(ctl, write, buffer, lenp, ppos);
++
++   if (write) {
++       unsigned char mac[ETH_ALEN];
++       scan_mac(brhttp_redirect_del_mac, mac);
++       br_hrdb_del(mac);
++   }
++
++   return ret;
++}
++
++
++static
++int br_sysctl_call_brhttp_redirect_flush_mac(ctl_table * ctl, int write, 
++               void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++   int ret;
++
++   ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++   if (write) {
++       br_hrdb_flush();
++   }
++
++   return ret;
++}
++
++static
++int br_sysctl_call_brhttp_redirect_print_mac(ctl_table * ctl, int write,
++               void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++   int ret;
++
++   ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++   if (write) {
++       br_hrdb_print();
++   }
++
++   return ret;
++}
++
++static
++int br_sysctl_call_brhttp_redirect_set_cpauth_status(ctl_table * ctl, int write,
++                            void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++        int ret;
++        int error;
++
++        ret = proc_dostring(ctl, write, buffer, lenp, ppos);
++
++        if (write) {
++                unsigned char mac[ETH_ALEN];
++                unsigned int status;
++                error = scan_str(brhttp_redirect_cpauth_status, mac, &status);
++                if(!error)
++                        br_hrdb_mark_cpauth_status(mac, status);
++                return error;
++        }
++
++        return ret;
++}
++
++static
++int br_sysctl_call_brhttp_redirect_reset_mac_entry(ctl_table * ctl, int write, struct file *filp,
++                            void __user * buffer, size_t * lenp, loff_t * ppos)
++{
++        int ret;
++
++        ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
++
++        if (write) {
++       br_hrdb_reset_mac_entry();
++        }
++
++        return ret;
++}
++
++#endif
++
++static struct ctl_table_header *br_sysctl_header;
++
++static ctl_table br_table[] = {
++
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++    {
++       .procname   = "bridge-http-redirect-enabled",
++       .data       = &brhttp_redirect_enabled,
++       .maxlen     = sizeof(int),
++       .mode       = 0644,
++       .proc_handler   = &br_sysctl_call_brhttp_redirect_enabled,
++   },
++   {
++       .procname   = "bridge-http-redirect-add-mac",
++       .data       = &brhttp_redirect_add_mac,
++       .maxlen     = sizeof(brhttp_redirect_add_mac),
++       .mode       = 0644,
++       .proc_handler   = &br_sysctl_call_brhttp_redirect_add_mac,
++   },
++   {
++       .procname   = "bridge-http-redirect-del-mac",
++       .data       = &brhttp_redirect_del_mac,
++       .maxlen     = sizeof(brhttp_redirect_del_mac),
++       .mode       = 0644,
++       .proc_handler   = &br_sysctl_call_brhttp_redirect_del_mac,
++   },
++   {
++       .procname   = "bridge-http-redirect-flush-mac",
++       .data       = &brhttp_redirect_flush_mac,
++       .maxlen     = sizeof(brhttp_redirect_flush_mac),
++       .mode       = 0644,
++       .proc_handler   = &br_sysctl_call_brhttp_redirect_flush_mac,
++   },
++   {
++       .procname   = "bridge-http-redirect-print-mac",
++       .data       = &brhttp_redirect_print_mac,
++       .maxlen     = sizeof(brhttp_redirect_print_mac),
++       .mode       = 0644,
++       .proc_handler   = &br_sysctl_call_brhttp_redirect_print_mac,
++   },
++   {
++
++       .procname       = "bridge-http-redirect-add-ip",
++       .data           = &brhttp_redirect_add_ip,
++       .maxlen         = sizeof(unsigned int),
++       .mode           = 0644,
++       .proc_handler   = &br_sysctl_call_brhttp_redirect_add_ip,
++   },
++   {
++
++     	.procname       = "bridge-http-redirect-del-ip",
++       	.data           = &brhttp_redirect_del_ip,
++       	.maxlen         = sizeof(unsigned int),
++       	.mode           = 0644,
++       	.proc_handler   = &br_sysctl_call_brhttp_redirect_del_ip,
++  	},
++   	{
++
++      	.procname       = "bridge-http-redirect-print-ip",
++       	.data           = &brhttp_redirect_print_ip,
++       	.maxlen         = sizeof(unsigned int),
++      	.mode           = 0644,
++      	.proc_handler   = &br_sysctl_call_brhttp_redirect_print_ip,
++  	},
++    {
++
++     	.procname       = "bridge-http-redirect-flush-ip",
++       	.data           = &brhttp_redirect_flush_ip,
++      	.maxlen         = sizeof(unsigned int),
++       	.mode           = 0644,
++       	.proc_handler   = &br_sysctl_call_brhttp_redirect_flush_ip,
++  	},
++
++ 	{
++     	.procname       = "bridge-http-redirect-set-cpauth-status",
++      	.data           = &brhttp_redirect_cpauth_status,
++       	.maxlen         = sizeof(brhttp_redirect_cpauth_status),
++       	.mode           = 0644,
++       	.proc_handler   = &br_sysctl_call_brhttp_redirect_set_cpauth_status,
++   	},
++   {
++                .procname       = "bridge-http-redirect-reset-mac-entry",
++                .data           = &brhttp_redirect_reset_entry,
++                .maxlen         = sizeof(unsigned int),
++                .mode           = 0644,
++                .proc_handler   = &br_sysctl_call_brhttp_redirect_reset_mac_entry,
++    },
++
++#endif
++   { }
++};
++
++
+ static void __net_exit br_net_exit(struct net *net)
+ {
+ 	struct net_device *dev;
+@@ -67,6 +429,12 @@ static int __init br_init(void)
+ 	if (err)
+ 		goto err_out2;
+ 
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++       err = br_hrdb_init();
++       if (err)
++               goto err_out3;
++#endif
++	
+ 	err = register_netdevice_notifier(&br_device_notifier);
+ 	if (err)
+ 		goto err_out3;
+@@ -75,17 +443,44 @@ static int __init br_init(void)
+ 	if (err)
+ 		goto err_out4;
+ 
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++	err = bridge_nlevent_init();
++    if (err)
++       	goto err_out4;
++#endif
++
+ 	brioctl_set(br_ioctl_deviceless_stub);
+ 
+ #if IS_ENABLED(CONFIG_ATM_LANE)
+ 	br_fdb_test_addr_hook = br_fdb_test_addr;
+ #endif
+ 
++#ifdef CONFIG_SYSCTL
++		br_sysctl_header = register_net_sysctl(&init_net, "net/bridge", br_table);
++       if (br_sysctl_header == NULL) {
++               printk(KERN_WARNING "br: can't register to sysctl.\n");
++               err = -ENOMEM;
++               goto err_out4;
++       } else {
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++               if (brhttp_redirect_enabled)
++                       printk(KERN_NOTICE "br: HTTP redirect enabled\n");
++               else
++                       printk(KERN_NOTICE "br: HTTP redirect disabled\n");
++#endif
++       }
++#endif
++
++
+ 	return 0;
++
+ err_out4:
+ 	unregister_netdevice_notifier(&br_device_notifier);
+ err_out3:
+ 	br_netfilter_fini();
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++   br_hrdb_flush();
++#endif
+ err_out2:
+ 	unregister_pernet_subsys(&br_net_ops);
+ err_out1:
+@@ -99,6 +494,13 @@ static void __exit br_deinit(void)
+ {
+ 	stp_proto_unregister(&br_stp_proto);
+ 
++#ifdef CONFIG_SYSCTL
++        unregister_sysctl_table(br_sysctl_header);
++#endif
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++        br_hrdb_flush();
++#endif
++
+ 	br_netlink_fini();
+ 	unregister_netdevice_notifier(&br_device_notifier);
+ 	brioctl_set(NULL);
+diff --git a/net/bridge/br_event.c b/net/bridge/br_event.c
+new file mode 100644
+index 0000000..3a5968c
+--- /dev/null
++++ b/net/bridge/br_event.c
+@@ -0,0 +1,183 @@
++/*
++ * br_event.h
++ *
++ * Copyright (c) Arada Systems, 1996-2007
++ *
++ */
++#include <linux/module.h>
++#include <linux/types.h>       /* off_t */
++#include <linux/netdevice.h>       /* struct ifreq, dev_get_by_name() */
++#include <linux/proc_fs.h>
++#include <linux/rtnetlink.h>       /* rtnetlink stuff */
++#include <linux/seq_file.h>
++#include <linux/init.h>            /* for __init */
++#include <linux/if_arp.h>      /* ARPHRD_ETHER */
++#include <linux/etherdevice.h>     /* compare_ether_addr */
++#include <linux/interrupt.h>
++#include <linux/netlink.h>
++
++//#include <linux/wireless.h>      /* Pretty obvious */
++//#include <net/iw_handler.h>      /* New driver API */
++#include <net/netlink.h>
++//#include <net/wext.h>
++
++#include <asm/uaccess.h>       /* copy_to_user() */
++#include "br_event.h"
++#include "br_private.h"
++
++/************************* EVENT PROCESSING *************************/
++/*
++ * Process events generated by the bridge layer.
++ * Most often, the event will be propagated through rtnetlink
++ */
++
++/* ---------------------------------------------------------------- */
++/*
++ * Locking...
++ * ----------
++ *
++ * Thanks to Herbert Xu <herbert@gondor.apana.org.au> for fixing
++ * the locking issue in here and implementing this code !
++ *
++ * The issue : bridge_send_event() is often called in interrupt context,
++ * while the Netlink layer can never be called in interrupt context.
++ * The fully formed RtNetlink events are queued, and then a tasklet is run
++ * to feed those to Netlink.
++ * The skb_queue is interrupt safe, and its lock is not held while calling
++ * Netlink, so there is no possibility of dealock.
++ * Jean II
++ */
++
++static struct sk_buff_head bridge_nlevent_queue;
++
++int __init bridge_nlevent_init(void)
++{
++   skb_queue_head_init(&bridge_nlevent_queue);
++   printk("%s: Initializing Bridge HTTP redirect event mechanism\n", __func__);
++   return 0;
++}
++
++
++static void bridge_nlevent_process(unsigned long data)
++{
++   struct sk_buff *skb;
++        struct net *net; 
++   //printk("%s: !!\n",__func__);
++   while ((skb = skb_dequeue(&bridge_nlevent_queue)))
++                {
++                net = dev_net(skb->dev);  
++       rtnl_notify(skb, net, 0, RTNLGRP_LINK, NULL, GFP_ATOMIC);
++                }
++}
++
++static DECLARE_TASKLET(bridge_nlevent_tasklet, bridge_nlevent_process, 0);
++
++
++void __rta_fill(struct sk_buff *skb, int attrtype, int attrlen, const void *data)
++{
++    struct rtattr *rta;
++    int size = RTA_LENGTH(attrlen);
++
++    rta = (struct rtattr *)skb_put(skb, RTA_ALIGN(size));
++    rta->rta_type = attrtype;
++    rta->rta_len = size;
++    memcpy(RTA_DATA(rta), data, attrlen);
++    memset(RTA_DATA(rta) + attrlen, 0, RTA_ALIGN(size) - size);
++}
++//EXPORT_SYMBOL(__rta_fill);
++
++
++
++/* ---------------------------------------------------------------- */
++/*
++ * Fill a rtnetlink message with our event data.
++ * Note that we propage only the specified event and don't dump the
++ * current bridge config. Dumping the wireless config is far too
++ * expensive (for each parameter, the driver need to query the hardware).
++ */
++static int rtnetlink_fill_brinfo(struct sk_buff *skb, struct net_device *dev,
++                int type, char *event, int event_len)
++{
++   struct ifinfomsg *r;
++   struct nlmsghdr  *nlh;
++   unsigned char    *b = skb_tail_pointer(skb);
++
++   nlh = nlmsg_put(skb, 0, 0, type, sizeof(*r),0);
++   r = NLMSG_DATA(nlh);
++   r->ifi_family = AF_UNSPEC;
++   r->__ifi_pad = 0;
++   r->ifi_type = dev->type;
++   r->ifi_index = dev->ifindex;
++   r->ifi_flags = dev_get_flags(dev);
++   r->ifi_change = 0;  /* Wireless changes don't affect those flags */
++
++   /* Add the bridge events in the netlink packet */
++   RTA_PUT(skb, IFLA_HTTPREDIR, event_len, event);
++
++   nlh->nlmsg_len = skb_tail_pointer(skb) - b;
++   return skb->len;
++
++nlmsg_failure:
++rtattr_failure:
++   nlmsg_trim(skb, b);
++   return -1;
++}
++
++/* ---------------------------------------------------------------- */
++/*
++ * Create and broadcast and send it on the standard rtnetlink socket
++ * This is a pure clone rtmsg_ifinfo() in net/core/rtnetlink.c
++ * Andrzej Krzysztofowicz mandated that I used a IFLA_XXX field
++ * within a RTM_NEWLINK event.
++ */
++static void rtmsg_brinfo(struct net_device *dev, char *event, int event_len)
++{
++   struct sk_buff *skb;
++   int size = NLMSG_GOODSIZE;
++
++   skb = alloc_skb(size, GFP_ATOMIC);
++   if (!skb)
++       return;
++
++   if (rtnetlink_fill_brinfo(skb, dev, RTM_NEWLINK,
++                 event, event_len) < 0) {
++       printk("%s: rtnetlink fill brinfo failed\n",__func__);
++       kfree_skb(skb);
++       return;
++   }
++   NETLINK_CB(skb).dst_group = RTNLGRP_LINK;
++   skb_queue_tail(&bridge_nlevent_queue, skb);
++   tasklet_schedule(&bridge_nlevent_tasklet);
++}
++
++/* ---------------------------------------------------------------- */
++/*
++ * Main event dispatcher. Called from other parts and drivers.
++ * Send the event on the appropriate channels.
++ * May be called from interrupt context.
++ */
++void bridge_send_event(struct net_device * dev,
++            struct brreq *     brreq)
++{
++   struct http_redir_event  *event;        /* Mallocated whole event */
++
++   //printk("%s: Got a bridge send event request\n", __func__);
++
++   /* Create temporary buffer to hold the event */
++   event = kmalloc(sizeof(struct http_redir_event), GFP_ATOMIC);
++   if (event == NULL)
++       return;
++
++   /* Fill event */
++   event->len = sizeof(struct http_redir_event);
++   memcpy(((char *)&event->u), ((char *) brreq), sizeof(struct brreq));
++
++   /* Send via the RtNetlink event channel */
++   rtmsg_brinfo(dev, (char *) event, sizeof(struct http_redir_event));
++
++   /* Cleanup */
++   kfree(event);
++
++   return;     /* Always success, I guess ;-) */
++}
++EXPORT_SYMBOL(bridge_send_event);
+diff --git a/net/bridge/br_event.h b/net/bridge/br_event.h
+new file mode 100644
+index 0000000..28b759e
+--- /dev/null
++++ b/net/bridge/br_event.h
+@@ -0,0 +1,35 @@
++/*
++ * br_event.h
++ *
++ * Copyright (c) Arada Systems, 1996-2007
++ *
++ */
++
++#ifndef _BR_EVENT_H
++#define _BR_EVENT_H
++
++#include <linux/if.h>
++#include <linux/ip.h>
++
++struct brreq
++{
++   char    dev[IFNAMSIZ];
++   struct iphdr iph;
++   unsigned char mac[ETH_ALEN];
++   unsigned char cpAuthstatus;
++   char    ifname[IFNAMSIZ];
++}; 
++
++struct http_redir_event
++{
++   __u16       len;            /* Real lenght of this stuff */
++   struct brreq    u;      /* Http Redirect Payload */
++};
++
++extern void bridge_send_event(struct net_device *  dev,
++               struct brreq *      brreq);
++
++extern int __init bridge_nlevent_init(void);
++
++#endif /* _BR_EVENT_H */
++
+diff --git a/net/bridge/br_hrdb.c b/net/bridge/br_hrdb.c
+new file mode 100644
+index 0000000..beb46ef
+--- /dev/null
++++ b/net/bridge/br_hrdb.c
+@@ -0,0 +1,380 @@
++/*
++* HTTP redirect database
++* Linux ethernet bridge
++*
++* Authors:
++*     linux@aradasystems.com
++*
++*
++* This program is free software; you can redistribute it and/or
++* modify it under the terms of the GNU General Public License
++* as published by the Free Software Foundation; either version
++* 2 of the License, or (at your option) any later version.
++*/
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/spinlock.h>
++#include <linux/times.h>
++#include <linux/netdevice.h>
++#include <linux/etherdevice.h>
++#include <linux/jhash.h>
++#include <linux/random.h>
++
++
++#include <asm/atomic.h>
++#include <asm/unaligned.h>
++#include "br_private.h"
++
++#include "br_event.h"
++/** 
++ * compare_ether_addr - Compare two Ethernet addresses
++ * @addr1: Pointer to a six-byte array containing the Ethernet address
++ * @addr2: Pointer other six-byte array containing the Ethernet address
++ *
++ * Compare two ethernet addresses, returns 0 if equal
++ */ 
++static inline unsigned compare_ether_addr(const u8 *addr1, const u8 *addr2)
++{   
++    const u16 *a = (const u16 *) addr1;
++    const u16 *b = (const u16 *) addr2;
++
++    BUILD_BUG_ON(ETH_ALEN != 6);
++    return ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2])) != 0;
++}
++
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++
++void bridge_send_event(struct net_device *dev, struct brreq *brreq);
++static struct hlist_head hrdb_hash[BR_HASH_SIZE];
++static spinlock_t hrdb_hash_lock;
++
++
++/******************************************************************************
++ * Primitives
++ ******************************************************************************/
++
++static inline int hrdb_mac_hash(const unsigned char *mac)
++{
++        /* use 1 byte of OUI cnd 3 bytes of NIC */
++        u32 key = get_unaligned((u32 *)(mac + 2));
++        return jhash_1word(key, 0) & (BR_HASH_SIZE - 1);
++}
++
++/* Caller needs to hold hrdb_hash_lock */
++static inline struct net_bridge_hrdb_entry *hrdb_find(struct hlist_head *head,
++                           const unsigned char *mac)
++{
++   struct net_bridge_hrdb_entry *hrdb;
++
++   hlist_for_each_entry(hrdb,head, hlist) {
++       if (!compare_ether_addr(hrdb->sta_addr.addr, mac))
++           return hrdb;
++   }
++   return NULL;
++}
++
++/* Caller needs to hold hrdb_hash_lock */
++static inline struct net_bridge_hrdb_entry *hrdb_create(struct hlist_head *head,
++                           const unsigned char *mac)
++{
++   struct net_bridge_hrdb_entry *hrdb = NULL;
++
++   hrdb = kmalloc(sizeof(struct net_bridge_hrdb_entry), GFP_ATOMIC);
++   if (hrdb) {
++       INIT_HLIST_NODE(&hrdb->hlist);
++       hlist_add_head(&hrdb->hlist, head);
++       memcpy(hrdb->sta_addr.addr, mac, ETH_ALEN);
++       hrdb->event_sent = 0;
++   }
++
++   return hrdb;
++}
++
++/* Caller needs to hold hrdb_hash_lock */
++static void hrdb_delete(struct net_bridge_hrdb_entry *hrdb)
++{
++   hlist_del(&hrdb->hlist);
++   kfree(hrdb);
++}
++
++/******************************************************************************
++ * Exported functions
++ ******************************************************************************/
++
++struct br_hrdb_ip *ipdb_head = NULL;
++
++void br_hrdb_add_ip(unsigned int ip)
++{
++        struct br_hrdb_ip *temp =NULL;
++        struct br_hrdb_ip *trav = ipdb_head;
++
++        temp = (struct br_hrdb_ip *) kmalloc(sizeof(struct br_hrdb_ip), GFP_ATOMIC);
++        if(temp){
++                temp->ip = ip;
++                temp->next = NULL;
++                if(ipdb_head == NULL)
++                        ipdb_head = temp;
++                else {
++                        while(trav->next != NULL) {
++                                trav = trav->next;
++                        }
++                        trav->next = temp;
++                }
++        }
++}
++
++void br_hrdb_flush_ip(void)
++{
++       struct br_hrdb_ip *temp = NULL;
++
++       while(ipdb_head) {
++               temp = ipdb_head;
++               ipdb_head = ipdb_head->next;
++               kfree(temp);
++       }
++       return;
++}
++
++int br_hrdb_find_ip(unsigned int ip)
++{
++       struct br_hrdb_ip *trav = ipdb_head;
++
++       while(trav){
++               if(trav->ip == ip)
++                       return 0;
++               trav = trav->next;
++       }
++       return 1;
++}
++
++void br_hrdb_print_ip(void)
++{
++       struct br_hrdb_ip *trav = ipdb_head;
++
++
++       while(trav) {
++			printk("CP IP-Addresses: %pI4\n",&(trav->ip));
++            trav = trav->next;
++		}
++       return;
++}
++
++void br_hrdb_del_ip(unsigned int ip)
++{
++        struct br_hrdb_ip *trav = ipdb_head;
++        struct br_hrdb_ip *prev = NULL;
++
++        if(trav == NULL)
++                return ;
++        if(trav->ip == ip){
++                ipdb_head = ipdb_head->next;
++                kfree(trav);
++                return;
++        }
++        while(trav != NULL){
++                if(trav->ip == ip){
++                        prev->next =trav->next;
++                        kfree(trav);
++                        break;
++                }
++                prev = trav;
++                trav = trav->next;
++        }
++}
++
++
++int br_hrdb_init(void)
++{
++   int i;
++
++   for (i = 0; i < BR_HASH_SIZE; i++) {
++       INIT_HLIST_HEAD(&hrdb_hash[i]);
++   }
++   spin_lock_init(&hrdb_hash_lock);
++
++   return 0;
++}
++
++
++int br_hrdb_flush(void)
++{
++   int i;
++
++   spin_lock_bh(&hrdb_hash_lock);
++   for (i = 0; i < BR_HASH_SIZE; i++) {
++       struct net_bridge_hrdb_entry *f;
++       struct hlist_node *n;
++       hlist_for_each_entry_safe(f,n, &hrdb_hash[i], hlist) {
++           kfree(f);
++       }
++       INIT_HLIST_HEAD(&hrdb_hash[i]);
++   }
++   spin_unlock_bh(&hrdb_hash_lock);
++
++   return 0;
++}
++
++/* Returns
++ * 0 on success
++ * -1 on failure 
++ */
++int br_hrdb_add(const unsigned char *mac)
++{
++   struct hlist_head *head = &hrdb_hash[hrdb_mac_hash(mac)];
++   struct net_bridge_hrdb_entry *hrdb;
++
++   spin_lock_bh(&hrdb_hash_lock);
++   hrdb = hrdb_find(head, mac);
++   if (hrdb)
++       hrdb_delete(hrdb);
++   hrdb = hrdb_create(head, mac);
++   spin_unlock_bh(&hrdb_hash_lock);
++
++   if (hrdb)
++       return 0;
++
++   return -1;
++}
++
++/* Returns
++ * 0 on success
++ * -1 on failure 
++ */
++int br_hrdb_del(const unsigned char *mac)
++{
++   struct hlist_head *head = &hrdb_hash[hrdb_mac_hash(mac)];
++   struct net_bridge_hrdb_entry *hrdb;
++   int ret = -1;
++
++   spin_lock_bh(&hrdb_hash_lock);
++   hrdb = hrdb_find(head, mac);
++   if (hrdb) {
++       hrdb_delete(hrdb);
++       ret = 0;
++   }
++   spin_unlock_bh(&hrdb_hash_lock);
++
++   return ret;
++}
++
++
++/* Returns
++ * 0 when not found
++ * 1 when found
++ */
++int br_hrdb_check(const unsigned char *mac, unsigned char *event_sent)
++{
++   struct hlist_head *head = &hrdb_hash[hrdb_mac_hash(mac)];
++   struct net_bridge_hrdb_entry *hrdb;
++   int ret = 0;
++   
++   if (event_sent)
++       *event_sent = 0;
++   spin_lock_bh(&hrdb_hash_lock);
++   hrdb = hrdb_find(head, mac);
++   if (hrdb) {
++       ret = 1;
++       if (event_sent)
++           *event_sent = hrdb->event_sent;
++   }
++   spin_unlock_bh(&hrdb_hash_lock);
++
++   return ret;
++}
++
++void br_hrdb_update(const unsigned char *mac, unsigned char event_sent)
++{
++   struct hlist_head *head = &hrdb_hash[hrdb_mac_hash(mac)];
++   struct net_bridge_hrdb_entry *hrdb;
++
++   spin_lock_bh(&hrdb_hash_lock);
++   hrdb = hrdb_find(head, mac);
++   if (hrdb) {
++       hrdb->event_sent = event_sent;
++   }
++   spin_unlock_bh(&hrdb_hash_lock);
++}
++
++void br_hrdb_print(void)
++{
++   int i;
++
++   spin_lock_bh(&hrdb_hash_lock);
++   for (i = 0; i < BR_HASH_SIZE; i++) {
++       struct net_bridge_hrdb_entry *f;
++       struct hlist_node *n;
++       hlist_for_each_entry_safe(f,n, &hrdb_hash[i], hlist) {
++           printk(KERN_NOTICE "br:hrdb:%02x:%02x:%02x:%02x:%02x:%02x found:%d event_sent:%d\n",
++                   f->sta_addr.addr[0],
++                   f->sta_addr.addr[1],
++                   f->sta_addr.addr[2],
++                   f->sta_addr.addr[3],
++                   f->sta_addr.addr[4],
++                   f->sta_addr.addr[5],
++                   (hrdb_find(&hrdb_hash[i], (unsigned const char *)&f->sta_addr.addr) == NULL) ? 0 : 1,
++                   f->event_sent
++               );
++       }
++   }
++   spin_unlock_bh(&hrdb_hash_lock);
++}
++
++int br_hrdb_mark_cpauth_status(unsigned char *mac, unsigned int status)
++{
++        struct net_device *dev;
++        struct brreq brreq;
++
++        dev = dev_get_by_name(&init_net,"brvlan1");
++        if(!dev){
++                printk("(%s %d) No device found with name \"brvlan1\"",__func__,__LINE__);
++                return -1;
++        }
++        memset(&brreq, 0, sizeof(brreq));
++        memcpy(brreq.dev, dev->name, IFNAMSIZ); /*Copy the device which the packet has come on*/
++        memcpy(brreq.mac, mac, ETH_ALEN); /* Copy the Source MAC */
++
++        if(status == 1)
++                brreq.cpAuthstatus = 1;
++        else  
++                brreq.cpAuthstatus = 2;
++
++        printk(KERN_NOTICE "http_redirection(%s,%d): cpauthstatus %d for %02x:%02x:%02x:%02x:%02x:%02x via event sent\n",
++                __func__,__LINE__,
++                brreq.cpAuthstatus,
++                mac[0],
++                mac[1],
++                mac[2],
++                mac[3],
++                mac[4],
++                mac[5]
++        );
++        bridge_send_event(dev, &brreq);
++        dev_put(dev);
++        return 0;
++}
++
++void br_hrdb_reset_mac_entry(void)
++{
++        int i;
++
++        spin_lock_bh(&hrdb_hash_lock);
++        for (i = 0; i < BR_HASH_SIZE; i++) {
++                struct net_bridge_hrdb_entry *f;
++                struct hlist_node *h, *n;
++                hlist_for_each_entry_safe(f, n, &hrdb_hash[i], hlist) {
++                        f->event_sent = 0;
++                        printk(KERN_NOTICE "br:hrdb:%02x:%02x:%02x:%02x:%02x:%02x found:%d event_sent:%d\n",
++                                        f->sta_addr.addr[0],
++                                        f->sta_addr.addr[1],
++                                        f->sta_addr.addr[2],
++                                        f->sta_addr.addr[3],
++                                        f->sta_addr.addr[4],
++                                        f->sta_addr.addr[5],
++                                        (hrdb_find(&hrdb_hash[i], (unsigned const char *)&f->sta_addr.addr) == NULL) ? 0 : 1,
++                                        f->event_sent);
++                }
++        }
++        spin_unlock_bh(&hrdb_hash_lock);
++}
++
++#endif
+diff --git a/net/bridge/br_input.c b/net/bridge/br_input.c
+index e695fe7..db48f87 100644
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -15,13 +15,93 @@
+ #include <linux/kernel.h>
+ #include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
++#include <linux/in.h>
+ #include <linux/netfilter_bridge.h>
++#include <linux/br_hook_defs.h>
++#include <linux/ip.h>
++#include <linux/tcp.h>
++#include "br_event.h"
++#include <linux/if_vlan.h>
+ #include <linux/neighbour.h>
+ #include <net/arp.h>
+ #include <linux/export.h>
+ #include <linux/rculist.h>
+ #include "br_private.h"
+ 
++
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++extern int brhttp_redirect_enabled;
++
++extern int br_hrdb_check(const unsigned char *mac, unsigned char *event_sent);
++extern void br_hrdb_update(const unsigned char *mac, unsigned char event_sent);
++
++
++#define IS_WIFI_VAP(dev) (dev->priv_flags & IFF_WIFI_VAP)
++#define IS_CP_ENABLED(dev) (dev->priv_flags & IFF_CAPTIVE_FLAG)
++
++#define AUTHSRV_PKT 3001
++#define WIFIDOG_PKT 2060 /* FIXME */
++#define HTTP_PKT    80
++#define HTTPS_PKT   443
++#define DNS_PKT     53
++#define DHCP_PKT    67
++#define ICMP_PKT    1
++#define ARP_PKT     0x0806
++#define NETBIOS_PKT 137
++#define LKLOCAL_PKT 5355
++#define INVALID_PKT 0xFFFF
++
++struct parse_pkt {
++	u16 type;
++	u16 dport;
++} __attribute__((packed));
++
++/* FIXME: Need to add support for IPv6 */
++#define PARSE_PACKET(skb)						\
++	({								\
++		struct parse_pkt ret;					\
++		struct iphdr *iph;					\
++		struct tcphdr *tcph;					\
++		struct udphdr *udph;					\
++		ret.type = INVALID_PKT;					\
++		ret.dport = INVALID_PKT;				\
++		/* Not an IP packet */					\
++		if ((skb)->protocol != htons(ETH_P_IP)) {		\
++			ret.type = ntohs((skb)->protocol);		\
++			goto ret1;					\
++		}							\
++									\
++		iph = ip_hdr((skb));					\
++		if(!iph) {						\
++			goto ret1;					\
++		}							\
++		/* Invalid IP header */					\
++		if (iph->ihl < 5 || iph->version != 4) {		\
++			goto ret1;					\
++		}							\
++		ret.type = iph->protocol;				\
++		/* We don't process pkts with IP options */		\
++		if (iph->ihl > 5) {					\
++			goto ret1;					\
++		}							\
++		if (iph->protocol == IPPROTO_TCP) { /* TCP pkt */	\
++			tcph = (struct tcphdr *)			\
++				((unsigned char *)iph + iph->ihl * 4);	\
++			ret.dport = ntohs(tcph->dest);			\
++		} else if (iph->protocol == IPPROTO_UDP) {		\
++			udph = (struct udphdr *)			\
++				((unsigned char *)iph + iph->ihl * 4);	\
++			ret.dport = ntohs(udph->dest);			\
++		}							\
++	ret1:								\
++		ret;							\
++	})
++
++#define SHOULD_PARSE(indev, skb)				\
++        (brhttp_redirect_enabled && IS_WIFI_VAP(indev) &&	\
++	  IS_CP_ENABLED(indev) && br_hrdb_check(eth_hdr(skb)->h_source, NULL))
++#endif /* CONFIG_HTTP_REDIRECT_ENABLED */
++
+ /* Hook for brouter */
+ br_should_route_hook_t __rcu *br_should_route_hook __read_mostly;
+ EXPORT_SYMBOL(br_should_route_hook);
+@@ -126,6 +206,7 @@ static void br_do_proxy_arp(struct sk_buff *skb, struct net_bridge *br,
+ 		neigh_release(n);
+ 	}
+ }
++extern int br_hrdb_find_ip(unsigned int);
+ 
+ /* note: already called with rcu_read_lock */
+ int br_handle_frame_finish(struct sk_buff *skb)
+@@ -167,6 +248,88 @@ int br_handle_frame_finish(struct sk_buff *skb)
+ 	if (br->dev->flags & IFF_PROMISC)
+ 		skb2 = skb;
+ 
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++	if (SHOULD_PARSE(skb->dev, skb)) {
++		struct parse_pkt pkt = PARSE_PACKET(skb);
++		switch (pkt.type) {
++		case IPPROTO_TCP:
++		{
++			switch (pkt.dport) {
++			/* HACK: All packets hits IPtables, this makes
++			 * the mark rule execute even before the dst
++			 * mac on the HTTP(S) packets are replaced. */
++			case WIFIDOG_PKT:
++				//if (memcmp((unsigned char *)dest, br->dev->dev_addr, ETH_ALEN) == 0) {
++				//	break; /* As we are using bridge-nf-call-iptables commenting this*/
++				//} else if (skb->mark != 0x3) {
++				//	goto drop;
++				//}
++			/* Treat TCP packets to port 2060 and mark 0x3
++			 * as HTTP(S) packets, hence fall through */
++			case HTTPS_PKT:
++			case HTTP_PKT:
++			{
++				unsigned char event_sent = 0;
++				struct iphdr *iph;
++				iph = ip_hdr(skb);
++				if (!br_hrdb_find_ip(iph->daddr)) { /* jump if ip is one of Captive Porat's ip */
++					break;
++				}
++
++				/* Change the dest MAC address to bridge's adress */
++				/* memcpy((unsigned char *)dest, br->dev->dev_addr, ETH_ALEN); */
++				skb->pkt_type = PACKET_HOST;
++				if (br_hrdb_check(eth_hdr(skb)->h_source, &event_sent) && !event_sent) {
++					struct brreq brreq;
++					memset(&brreq, 0, sizeof(brreq));
++					memcpy(brreq.dev,br->dev,IFNAMSIZ); /*Copy the device which the packet has come on*/
++					memcpy(&brreq.iph, iph, sizeof(*iph)); /*Copy the IP Header*/
++					memcpy(brreq.mac, eth_hdr(skb)->h_source, ETH_ALEN); /* Copy the Source MAC */
++					memcpy(brreq.ifname, p->dev->name, IFNAMSIZ); /* Copy the Source MAC */
++					bridge_send_event(skb->dev, &brreq);
++					br_hrdb_update(eth_hdr(skb)->h_source, 1);
++				}
++			}
++			break;
++			case AUTHSRV_PKT:
++				//if (memcmp((unsigned char *)dest, br->dev->dev_addr, ETH_ALEN)) {
++				//	goto drop;
++				//}
++			case DNS_PKT:
++			case NETBIOS_PKT:
++			case LKLOCAL_PKT:
++				break;
++			default:
++				goto drop;
++			}
++		}
++		break;
++		case IPPROTO_UDP:
++		{
++			switch (pkt.dport) {
++			case DNS_PKT:
++			case DHCP_PKT:
++				break;
++			default:
++				goto drop;
++			}
++		}
++		break;
++		case IPPROTO_ICMP:
++		case ETH_P_ARP:
++		case ETH_P_PAE:
++			break;
++
++		case INVALID_PKT:
++		default:
++			goto drop;
++
++		}
++	}
++#endif
++
++
++/* DNT_REDIRECT: */
+ 	dst = NULL;
+ 
+ 	if (IS_ENABLED(CONFIG_INET) && skb->protocol == htons(ETH_P_ARP))
+diff --git a/net/bridge/br_private.h b/net/bridge/br_private.h
+index 75eb2b7..d0ad421 100644
+--- a/net/bridge/br_private.h
++++ b/net/bridge/br_private.h
+@@ -44,17 +44,32 @@ typedef struct bridge_id bridge_id;
+ typedef struct mac_addr mac_addr;
+ typedef __u16 port_id;
+ 
+-struct bridge_id
++struct mac_addr
+ {
+-	unsigned char	prio[2];
+ 	unsigned char	addr[6];
+ };
+ 
+-struct mac_addr
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++struct net_bridge_hrdb_entry
++{
++        struct hlist_node               hlist;
++        mac_addr                        sta_addr;
++        unsigned char                   event_sent;
++};
++
++struct br_hrdb_ip {
++        unsigned int ip;
++        struct br_hrdb_ip *next;
++};
++#endif
++
++struct bridge_id
+ {
++	unsigned char	prio[2];
+ 	unsigned char	addr[6];
+ };
+ 
++
+ struct br_ip
+ {
+ 	union {
+@@ -790,6 +805,12 @@ extern struct rtnl_link_ops br_link_ops;
+ int br_netlink_init(void);
+ void br_netlink_fini(void);
+ void br_ifinfo_notify(int event, struct net_bridge_port *port);
++
++#ifdef CONFIG_HTTP_REDIRECT_ENABLED
++/* br_event.c */
++extern int bridge_nlevent_init(void);
++#endif
++
+ int br_setlink(struct net_device *dev, struct nlmsghdr *nlmsg);
+ int br_dellink(struct net_device *dev, struct nlmsghdr *nlmsg);
+ int br_getlink(struct sk_buff *skb, u32 pid, u32 seq, struct net_device *dev,

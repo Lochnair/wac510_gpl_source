@@ -1,0 +1,136 @@
+diff --git a/drivers/mtd/mtdoops.c b/drivers/mtd/mtdoops.c
+index 97bb8f6..ed550c9 100644
+--- a/drivers/mtd/mtdoops.c
++++ b/drivers/mtd/mtdoops.c
+@@ -34,17 +34,25 @@
+ #include <linux/kmsg_dump.h>
+ 
+ /* Maximum MTD partition size */
+-#define MTDOOPS_MAX_MTD_SIZE (8 * 1024 * 1024)
++#define MTDOOPS_MAX_MTD_SIZE (768 * 1024)
+ 
+ #define MTDOOPS_KERNMSG_MAGIC 0x5d005d00
+ #define MTDOOPS_HEADER_SIZE   8
+ 
+-static unsigned long record_size = 4096;
++/* If we need to add timestamp,
++ * define MTDOOPS_TS_ENABLED as 1, else 0
++ * */
++#define MTDOOPS_TS_ENABLED 0
++
++/* record_size can be modified to store more of oops-log, 
++ * but from our observation, 16K should do
++ * */
++static unsigned long record_size = (16*1024);
+ module_param(record_size, ulong, 0400);
+ MODULE_PARM_DESC(record_size,
+ 		"record size for MTD OOPS pages in bytes (default 4096)");
+ 
+-static char mtddev[80];
++static char mtddev[80] = "Oops_log";
+ module_param_string(mtddev, mtddev, 80, 0400);
+ MODULE_PARM_DESC(mtddev,
+ 		"name or index number of the MTD device to use");
+@@ -220,15 +228,20 @@ static void mtdoops_write(struct mtdoops_context *cxt, int panic)
+ 	hdr[1] = MTDOOPS_KERNMSG_MAGIC;
+ 
+ 	if (panic) {
++		printk (KERN_NOTICE "calling mtd_panic_write!\n");
+ 		ret = mtd_panic_write(mtd, cxt->nextpage * record_size,
+ 				      record_size, &retlen, cxt->oops_buf);
+ 		if (ret == -EOPNOTSUPP) {
+ 			printk(KERN_ERR "mtdoops: Cannot write from panic without panic_write\n");
+ 			return;
++		} else {
++			printk (KERN_NOTICE "mtdoops: mtd_oops_write success\n");
+ 		}
+-	} else
++	} else {
++		printk (KERN_NOTICE "scheduling work to call mtd_panic_write!\n");
+ 		ret = mtd_write(mtd, cxt->nextpage * record_size,
+ 				record_size, &retlen, cxt->oops_buf);
++	}
+ 
+ 	if (retlen != record_size || ret < 0)
+ 		printk(KERN_ERR "mtdoops: write failure at %ld (%td of %ld written), error %d\n",
+@@ -300,25 +313,49 @@ static void find_next_position(struct mtdoops_context *cxt)
+ 	mtdoops_inc_counter(cxt);
+ }
+ 
++static inline int add_mtdoops_ts (char *oops_buf, int maxlen)
++{
++#include <linux/time.h>
++	unsigned long get_time;
++	struct timeval tv;
++	struct tm tm;
++
++	do_gettimeofday(&tv);
++	get_time = tv.tv_sec;
++	time_to_tm (get_time, 0, &tm);
++	return snprintf (oops_buf, maxlen, \
++			"@UTC-TIME %02d-%02d-%4ld %02d:%02d:%02d==\n", \
++			tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, \
++			tm.tm_hour, tm.tm_min, tm.tm_sec);
++}
++
+ static void mtdoops_do_dump(struct kmsg_dumper *dumper,
+ 			    enum kmsg_dump_reason reason)
+ {
++	int time_strlen = 0;
+ 	struct mtdoops_context *cxt = container_of(dumper,
+ 			struct mtdoops_context, dump);
+ 
++	printk (KERN_NOTICE "in mtdoops_do_dump with reason: %u\n", reason);
+ 	/* Only dump oopses if dump_oops is set */
+ 	if (reason == KMSG_DUMP_OOPS && !dump_oops)
+ 		return;
+ 
+-	kmsg_dump_get_buffer(dumper, true, cxt->oops_buf + MTDOOPS_HEADER_SIZE,
+-			     record_size - MTDOOPS_HEADER_SIZE, NULL);
++#if MTDOOPS_TS_ENABLED
++	time_strlen = add_mtdoops_ts (cxt->oops_buf + MTDOOPS_HEADER_SIZE, \
++			record_size - MTDOOPS_HEADER_SIZE);
++#endif
++	kmsg_dump_get_buffer(dumper, true, \
++			cxt->oops_buf + MTDOOPS_HEADER_SIZE + time_strlen,
++			record_size - MTDOOPS_HEADER_SIZE - time_strlen, NULL);
+ 
+-	/* Panics must be written immediately */
+-	if (reason != KMSG_DUMP_OOPS)
++	if (reason != KMSG_DUMP_OOPS) {
++		/* Panics must be written immediately */
+ 		mtdoops_write(cxt, 1);
+-
+-	/* For other cases, schedule work to write it "nicely" */
+-	schedule_work(&cxt->work_write);
++	} else {
++		/* For other cases, schedule work to write it "nicely" */
++		schedule_work(&cxt->work_write);
++	}
+ }
+ 
+ static void mtdoops_notify_add(struct mtd_info *mtd)
+@@ -344,8 +381,8 @@ static void mtdoops_notify_add(struct mtd_info *mtd)
+ 		return;
+ 	}
+ 	if (mtd->size > MTDOOPS_MAX_MTD_SIZE) {
+-		printk(KERN_ERR "mtdoops: mtd%d is too large (limit is %d MiB)\n",
+-		       mtd->index, MTDOOPS_MAX_MTD_SIZE / 1024 / 1024);
++		printk(KERN_ERR "mtdoops: mtd%d is too large (limit is %d KiB)\n",
++		       mtd->index, MTDOOPS_MAX_MTD_SIZE / 1024);
+ 		return;
+ 	}
+ 
+diff --git a/include/asm-generic/resource.h b/include/asm-generic/resource.h
+index b4ea8f5..5f43f89 100644
+--- a/include/asm-generic/resource.h
++++ b/include/asm-generic/resource.h
+@@ -13,7 +13,7 @@
+ 	[RLIMIT_FSIZE]		= {  RLIM_INFINITY,  RLIM_INFINITY },	\
+ 	[RLIMIT_DATA]		= {  RLIM_INFINITY,  RLIM_INFINITY },	\
+ 	[RLIMIT_STACK]		= {       _STK_LIM,   _STK_LIM_MAX },	\
+-	[RLIMIT_CORE]		= {              0,  RLIM_INFINITY },	\
++	[RLIMIT_CORE]		= {  RLIM_INFINITY,  RLIM_INFINITY },	\
+ 	[RLIMIT_RSS]		= {  RLIM_INFINITY,  RLIM_INFINITY },	\
+ 	[RLIMIT_NPROC]		= {              0,              0 },	\
+ 	[RLIMIT_NOFILE]		= {   INR_OPEN_CUR,   INR_OPEN_MAX },	\

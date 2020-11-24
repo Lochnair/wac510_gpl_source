@@ -1,0 +1,80 @@
+diff --git a/board/qcom/ipq40xx_cdp/ipq40xx_board_param.h b/board/qcom/ipq40xx_cdp/ipq40xx_board_param.h
+--- a/board/qcom/ipq40xx_cdp/ipq40xx_board_param.h
++++ b/board/qcom/ipq40xx_cdp/ipq40xx_board_param.h
+@@ -763,6 +763,19 @@
+ 	},
+ };
+ 
++gpio_func_data_t wac505_led_gpio[] = {
++    {
++        .gpio = 22,
++        .func = 0,
++        .pull = GPIO_PULL_UP,
++        .drvstr = GPIO_16MA,
++        .oe = GPIO_OE_ENABLE,
++        .gpio_vm = GPIO_VM_ENABLE,
++        .gpio_od_en = GPIO_OD_DISABLE,
++        .gpio_pu_res = GPIO_PULL_RES2
++    },
++};
++
+ gpio_func_data_t ap_dk01_1_c2_sw_gpio_qfn[] = {
+ 	{
+ 		.gpio = 52,
+@@ -1128,6 +1141,8 @@
+ 		.spi_nor_gpio_count = ARRAY_SIZE(spi_nor_bga),
+ 		.nand_gpio = nand_gpio_bga,
+ 		.nand_gpio_count = ARRAY_SIZE(nand_gpio_bga),
++        .led_gpio = wac505_led_gpio,
++        .led_gpio_count = ARRAY_SIZE(wac505_led_gpio),
+ 		.sw_gpio = sw_gpio_bga,
+ 		.sw_gpio_count = ARRAY_SIZE(sw_gpio_bga),
+ 		.edma_cfg = {
+@@ -1154,8 +1154,6 @@
+ #ifdef CONFIG_IPQ40XX_I2C
+ 		.i2c_cfg = &i2c0,
+ #endif
+-		.mmc_gpio = mmc_ap_dk04,
+-		.mmc_gpio_count = ARRAY_SIZE(mmc_ap_dk04),
+ 		.spi_nand_available = 0,
+ 		.nor_nand_available = 0,
+ 		.nor_emmc_available = 0,
+diff --git a/board/qcom/ipq40xx_cdp/ipq40xx_cdp.h b/board/qcom/ipq40xx_cdp/ipq40xx_cdp.h
+--- a/board/qcom/ipq40xx_cdp/ipq40xx_cdp.h
++++ b/board/qcom/ipq40xx_cdp/ipq40xx_cdp.h
+@@ -116,6 +116,8 @@
+ 	unsigned int sw_gpio_count;
+ 	gpio_func_data_t *rgmii_gpio;
+ 	unsigned int rgmii_gpio_count;
++    gpio_func_data_t *led_gpio;
++    unsigned int led_gpio_count;
+ 	ipq40xx_edma_board_cfg_t edma_cfg[IPQ40XX_EDMA_DEV];
+ 	uart_cfg_t *uart_cfg;
+ 	uart_cfg_t *console_uart_cfg;
+diff --git a/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c b/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
+--- a/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
++++ b/board/qcom/ipq40xx_cdp/ipq40xx_cdp.c
+@@ -344,6 +350,7 @@
+ 	qca_smem_flash_info_t *sfi = &qca_smem_flash_info;
+ 	uchar product_id[BOARD_PRODUCT_ID_LENGTH + 1] = {'\0'};
+ 	int ret;
++	gpio_func_data_t *gpio;
+ 
+ 	if (sfi->flash_type != SMEM_BOOT_MMC_FLASH) {
+ 		qca_get_part_details();
+@@ -350,6 +357,15 @@
+ 		setenv_addr("machid", (void *)machid);
+ 		gd->bd->bi_arch_number = machid;
+ 	}
++	
++	gpio = gboard_param->led_gpio;
++	printf("led_gpio: %d\n",  gboard_param->led_gpio->gpio);
++	if (gpio) {
++		qca_configure_gpio(gpio, gboard_param->led_gpio_count);
++	}
++	
++	/* Set Power LED to Solid Amber */
++	//wac510_led_init(gpio);
+ 
+ 	return 0;
+ }

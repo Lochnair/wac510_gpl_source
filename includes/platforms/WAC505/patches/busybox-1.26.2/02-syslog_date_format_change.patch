@@ -1,0 +1,38 @@
+diff --git a/sysklogd/syslogd.c b/sysklogd/syslogd.c
+index a6a4ff2..6708556 100644
+--- a/sysklogd/syslogd.c
++++ b/sysklogd/syslogd.c
+@@ -694,11 +694,13 @@ static void parse_fac_prio_20(int pri, char *res20)
+  * that there is no timestamp, short-circuiting the test. */
+ static void timestamp_and_log(int pri, char *msg, int len)
+ {
+-	char *timestamp;
++	char *timestamp, temp[32], temp1[10];
+ 	time_t now;
++    FILE *fp;
+ 
+ 	/* Jan 18 00:11:22 msg... */
+ 	/* 01234567890123456 */
++#if 0
+ 	if (len < 16 || msg[3] != ' ' || msg[6] != ' '
+ 	 || msg[9] != ':' || msg[12] != ':' || msg[15] != ' '
+ 	) {
+@@ -710,6 +712,18 @@ static void timestamp_and_log(int pri, char *msg, int len)
+ 		msg += 16;
+ 	}
+ 	timestamp[15] = '\0';
++#endif
++    time(&now);
++    timestamp = ctime(&now);
++    msg += 16;
++    /*}*/
++    fp = popen("date", "r");
++    if (fp != NULL) {
++        fscanf(fp, "%*s %*s %*s %*s %s %s", temp, temp1);
++        pclose(fp);
++    }
++    sprintf(strrchr(timestamp, ' ')," %s %s", temp, temp1);
++    timestamp[29] = '\0';
+ 
+ 	if (option_mask32 & OPT_kmsg) {
+ 		log_to_kmsg(pri, msg);
